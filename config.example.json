@@ -1,0 +1,14 @@
+{
+  "dwellMs" : 150,
+  "enabled" : true,
+  "ignoreApps" : [
+
+  ],
+  "ignoreWhenButtonDown" : true,
+  "menuBarIcon" : "auto",
+  "pauseModifier" : "function",
+  "raiseApps" : [
+
+  ],
+  "stillnessPx" : 4
+}
