@@ -45,45 +45,8 @@ public enum MenuModel {
         URL(fileURLWithPath: configPath())
     }
 
-    private struct PartialConfig: Decodable {
-        var enabled: Bool?
-        var dwellMs: Int?
-        var stillnessPx: Double?
-        var ignoreWhenButtonDown: Bool?
-        var pauseModifier: PauseModifier?
-        var ignoreApps: [String]?
-        var raiseApps: [String]?
-        var menuBarIcon: MenuBarIconStyle?
-    }
-
     public static func loadConfig(at url: URL = configURL()) throws -> Config {
-        _ = try? ConfigLoader.load(from: url)
-        let path = url.path
-        guard FileManager.default.fileExists(atPath: path) else {
-            return Config()
-        }
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            throw ConfigError.unreadable(path: path)
-        }
-        do {
-            let decoder = JSONDecoder()
-            let partial = try decoder.decode(PartialConfig.self, from: data)
-            var config = Config()
-            if let val = partial.enabled { config.enabled = val }
-            if let val = partial.dwellMs { config.dwellMs = val }
-            if let val = partial.stillnessPx { config.stillnessPx = val }
-            if let val = partial.ignoreWhenButtonDown { config.ignoreWhenButtonDown = val }
-            if let val = partial.pauseModifier { config.pauseModifier = val }
-            if let val = partial.ignoreApps { config.ignoreApps = val }
-            if let val = partial.raiseApps { config.raiseApps = val }
-            if let val = partial.menuBarIcon { config.menuBarIcon = val }
-            return config
-        } catch {
-            throw ConfigError.invalid(path: path, reason: error.localizedDescription)
-        }
+        try ConfigLoader.load(from: url)
     }
 
     public static func statusLine(for status: AppStatus) -> String {
