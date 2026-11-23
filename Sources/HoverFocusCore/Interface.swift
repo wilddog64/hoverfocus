@@ -50,6 +50,10 @@ public enum PauseModifier: String, Codable, Sendable, Equatable {
     case none, control, option, command, function
 }
 
+public enum MenuBarIconStyle: String, Codable, Sendable, Equatable, CaseIterable {
+    case auto, color, light, dark
+}
+
 public struct Config: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var dwellMs: Int
@@ -58,12 +62,15 @@ public struct Config: Codable, Sendable, Equatable {
     public var pauseModifier: PauseModifier
     public var ignoreApps: [String]
     public var raiseApps: [String]
+    public var menuBarIcon: MenuBarIconStyle
     public init(enabled: Bool = true, dwellMs: Int = 150, stillnessPx: Double = 4,
                 ignoreWhenButtonDown: Bool = true, pauseModifier: PauseModifier = .function,
-                ignoreApps: [String] = [], raiseApps: [String] = []) {
+                ignoreApps: [String] = [], raiseApps: [String] = [],
+                menuBarIcon: MenuBarIconStyle = .auto) {
         self.enabled = enabled; self.dwellMs = dwellMs; self.stillnessPx = stillnessPx
         self.ignoreWhenButtonDown = ignoreWhenButtonDown; self.pauseModifier = pauseModifier
         self.ignoreApps = ignoreApps; self.raiseApps = raiseApps
+        self.menuBarIcon = menuBarIcon
     }
 }
 

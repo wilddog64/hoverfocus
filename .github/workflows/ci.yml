@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Swift version
+        run: |
+          swift --version
+          swift --version | grep -E 'Swift version 6\.'
+
+      - name: Build package
+        run: swift build
+
+      - name: Run selftest
+        run: swift run hoverfocus-selftest
+
+      - name: Run installation test
+        run: bash tests/install_test.sh
