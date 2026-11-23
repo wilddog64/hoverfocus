@@ -93,7 +93,10 @@ See [docs/config.md](docs/config.md) for full descriptions of all configuration 
 - Electron applications and full-screen spaces may handle window focus differently.
 - Intended for personal workstations and development environments.
 - Some applications raise their own window when activated; add those apps to `ignoreApps` if needed.
-- Focus between windows in the already-front app and focus of non-key windows have not yet been live-checked.
+- Hovering another window of the app that is already in front does not move focus (live-checked on macOS 26,
+  2026-11-23); click to switch windows within one app. Planned fix: v0.0.2.
+- After hover focus returns to a terminal (iTerm2, Terminal.app), its cursor can be drawn as unfocused (hollow) even
+  though keystrokes reach it; one click restores it. Planned fix: v0.0.2.
 
 ## License
 
