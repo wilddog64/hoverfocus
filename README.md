@@ -92,3 +92,7 @@ See [docs/config.md](docs/config.md) for full descriptions of all configuration 
 - Ad-hoc signed builds require re-granting Accessibility permission after rebuilding.
 - Electron applications and full-screen spaces may handle window focus differently.
 - Intended for personal workstations and development environments.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
