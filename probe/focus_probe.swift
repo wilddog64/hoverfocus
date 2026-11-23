@@ -3,7 +3,7 @@
 // Variants: A kCPSUserGenerated, B kCPSNoWindows, C = A + make-key records, D = B + deactivate/activate + make-key.
 // Event-record byte layout (0xf8 bytes; 0x04=0xf8, 0x08=record kind, 0x20..0x2f=0xff, 0x3a=0x10, 0x3c=window id,
 // 0x8a=activate/deactivate) is taken from public write-ups of the technique; written from scratch, no code copied.
-// Run: swift focus_probe.swift   (needs Command Line Tools; no sudo, no Accessibility grant needed)
+// Run: swift focus_probe.swift [VARIANT ...]  e.g. swift focus_probe.swift B B B D D   (needs Command Line Tools; no sudo, no Accessibility grant needed)
 import AppKit
 import CoreGraphics
 import Darwin
@@ -89,8 +89,10 @@ func deactivateActivate(old: ProcessSerialNumber, oldWid: UInt32, new: ProcessSe
 
 struct Row { let v: String; let calls: [Int32]; let focusApp: Bool; let raised: Bool; let typed: String }
 var rows: [Row] = []
-let variants = [("A", "SetFront kCPSUserGenerated"), ("B", "SetFront kCPSNoWindows"),
+let allVariants = [("A", "SetFront kCPSUserGenerated"), ("B", "SetFront kCPSNoWindows"),
                 ("C", "A + make-key records"), ("D", "B + deactivate/activate + make-key records")]
+let picks = CommandLine.arguments.dropFirst().map { $0.uppercased() }
+let variants = picks.isEmpty ? allVariants : picks.compactMap { p in allVariants.first { $0.0 == p } }
 
 print("""
 hoverfocus focus probe. Setup: open a TextEdit document and place this Terminal so it covers PART of the
