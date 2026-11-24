@@ -189,6 +189,87 @@ func checkStart(_ checks: StartChecks, _ expected: ControllerError, _ name: Stri
     }
 }
 
+@MainActor
+final class FakeController: FocusControlling {
+    private(set) var isRunning = false
+    var isPaused = false
+    var startError: ControllerError?
+    var calls: [String] = []
+
+    func start() throws {
+        calls.append("start")
+        guard !isRunning else { return }
+        if let startError { throw startError }
+        isRunning = true
+    }
+
+    func stop() {
+        calls.append("stop")
+        isRunning = false
+    }
+
+    func apply(_ config: Config) {
+        calls.append("apply(\(config.dwellMs))")
+    }
+}
+
+@MainActor
+func coordinatorChecks() {
+    do {
+        let controller = FakeController()
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { true })
+        coordinator.load(.success(Config(dwellMs: 200)))
+        let beforeFailure = controller.calls.count
+        coordinator.load(.failure(.invalid(path: "test", reason: "broken")))
+        let failedCalls = Array(controller.calls.dropFirst(beforeFailure))
+        check(failedCalls == ["stop"] && !controller.isRunning && coordinator.config.dwellMs == 200 && coordinator.configError != nil,
+              "A1 fails closed")
+        coordinator.load(.success(Config(dwellMs: 300)))
+        check(controller.calls.suffix(2).elementsEqual(["apply(300)", "start"]) && controller.isRunning && coordinator.configError == nil,
+              "A1 recovers")
+    }
+    do {
+        let controller = FakeController()
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { true })
+        coordinator.load(.success(Config(enabled: false)))
+        check(controller.calls == ["apply(150)", "start"] && coordinator.configError == nil,
+              "positive control disabled config starts")
+    }
+    do {
+        let controller = FakeController()
+        controller.startError = .accessibilityNotTrusted
+        var trusted = false
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { trusted })
+        coordinator.load(.success(Config()))
+        for _ in 0..<100 { coordinator.trustTick() }
+        let noExtraStart = controller.calls.filter { $0 == "start" }.count == 1
+        trusted = true
+        controller.startError = nil
+        coordinator.trustTick()
+        check(coordinator.startError == nil && coordinator.watchingTrust == false && controller.isRunning &&
+              controller.calls.filter { $0 == "start" }.count == 2 && noExtraStart,
+              "watch without a click")
+    }
+    do {
+        let controller = FakeController()
+        var trusted = false
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { trusted })
+        coordinator.load(.failure(.invalid(path: "test", reason: "broken")))
+        trusted = true
+        coordinator.trustTick()
+        check(controller.calls == ["stop"] && !controller.isRunning && !coordinator.watchingTrust,
+              "config error stays closed")
+    }
+    do {
+        let controller = FakeController()
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { true })
+        coordinator.load(.success(Config()))
+        check(!coordinator.watchingTrust, "trusted at launch")
+    }
+}
+
+coordinatorChecks()
+
 let trustRecorder = CheckRecorder()
 checkStart(StartChecks(
     isTrusted: { trustRecorder.record("trust"); return false },
