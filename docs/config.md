@@ -3,7 +3,7 @@
 HoverFocus reads its configuration from `~/.config/hoverfocus/config.json`.
 The configuration path can be overridden by setting the `HOVERFOCUS_CONFIG` environment variable.
 
-If the configuration file is missing, default values are used. If the file contains invalid JSON or invalid values, HoverFocus keeps the defaults, reports the error in its menu bar item, and continues running.
+If the configuration file is missing, default values are used. If the file contains invalid JSON or invalid values, HoverFocus shows `Error: config <reason>` and stops focusing until a valid file is loaded with Reload Config.
 
 ## Configuration Keys
 
