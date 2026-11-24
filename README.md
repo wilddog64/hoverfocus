@@ -92,7 +92,10 @@ See [docs/config.md](docs/config.md) for full descriptions of all configuration 
 - Ad-hoc signed builds require re-granting Accessibility permission after rebuilding.
 - Electron applications and full-screen spaces may handle window focus differently.
 - Intended for personal workstations and development environments.
-- Some applications raise their own window when activated; add those apps to `ignoreApps` if needed.
+- Some applications raise their own window when activated; add those apps to `ignoreApps` (bundle IDs) if needed.
+  Safari is one: hover focus moves its window to the front and opens the address-bar Favorites list
+  (live-checked on macOS 26, 2026-11-24; TextEdit in the same test stayed behind). Workaround:
+  `"ignoreApps": ["com.apple.Safari"]`.
 - Hovering another window of the app that is already in front does not move focus (live-checked on macOS 26,
   2026-11-23); click to switch windows within one app. Planned fix: v0.0.2.
 - After hover focus returns to a terminal (iTerm2, Terminal.app), its cursor can be drawn as unfocused (hollow) even
