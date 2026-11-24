@@ -35,13 +35,22 @@ make install
 
 This installs `HoverFocus.app` into `~/Applications/` and registers a user LaunchAgent in `~/Library/LaunchAgents/com.wilddog64.hoverfocus.plist`. You can customize the target directories with `APPDIR` and `AGENTDIR`.
 
+Re-installing with `make install` while HoverFocus is running is safe: it unloads the existing agent and waits for it to stop before bootstrapping the new one.
+
+In a non-GUI session (such as over SSH or in a tmux session where `launchctl managername` is not `Aqua`), the files are installed but the LaunchAgent is not loaded directly. `make install` prints the `sudo launchctl asuser` commands to load the agent:
+
+```bash
+sudo launchctl asuser <uid> launchctl bootout gui/<uid>/com.wilddog64.hoverfocus
+sudo launchctl asuser <uid> launchctl bootstrap gui/<uid> '<plist>'
+```
+
 To uninstall:
 
 ```bash
 make uninstall
 ```
 
-Neither target requires `sudo`.
+In a non-GUI session, `make uninstall` removes the files and prints the `sudo launchctl asuser <uid> launchctl bootout gui/<uid>/com.wilddog64.hoverfocus` command. Neither target requires `sudo`.
 
 ## Granting Accessibility Permissions
 
@@ -51,11 +60,15 @@ HoverFocus requires macOS Accessibility permission to monitor pointer movement a
 2. Click **Grant Accessibility…** in the menu bar menu, or navigate to **System Settings > Privacy & Security > Accessibility**.
 3. Enable HoverFocus in the list.
 
-When using ad-hoc code signing, macOS invalidates Accessibility trust whenever the binary is recompiled. Reset permissions before re-granting if needed:
+HoverFocus notices the permission grant within a few seconds without requiring an application restart.
+
+When using ad-hoc code signing, macOS invalidates Accessibility trust whenever the binary is recompiled. After rebuilding an ad-hoc build, reset permissions before re-granting:
 
 ```bash
 tccutil reset Accessibility com.wilddog64.hoverfocus
 ```
+
+then enable HoverFocus in System Settings > Privacy & Security > Accessibility.
 
 ## Menu Bar Interface
 
@@ -92,7 +105,7 @@ See [docs/config.md](docs/config.md) for full descriptions of all configuration 
 - Ad-hoc signed builds require re-granting Accessibility permission after rebuilding.
 - Electron applications and full-screen spaces may handle window focus differently.
 - Intended for personal workstations and development environments.
-- Some applications raise their own window when activated; add those apps to `ignoreApps` if needed.
+- Some apps can raise their own window when they receive focus (seen with Safari on macOS 26). Add such apps to ignoreApps (bundle IDs), for example "ignoreApps": ["com.apple.Safari"].
 - Hovering another window of the app that is already in front does not move focus (live-checked on macOS 26,
   2026-11-23); click to switch windows within one app. Planned fix: v0.0.2.
 - After hover focus returns to a terminal (iTerm2, Terminal.app), its cursor can be drawn as unfocused (hollow) even

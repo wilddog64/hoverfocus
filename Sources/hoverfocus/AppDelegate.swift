@@ -6,12 +6,13 @@ import HoverFocusPlatform
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var controller: HoverFocusController!
-    private var config: Config = Config()
-    private var configError: ConfigError?
+    private var coordinator: AppCoordinator!
     private var appearanceObserver: NSKeyValueObservation?
     private var accessibilityTimer: Timer?
     private var pauseTimer: Timer?
-    private var accessibilityAttempts = 0
+
+    private var config: Config { coordinator.config }
+    private var configError: ConfigError? { coordinator.configError }
 
     // Menu item references
     private var statusMenuItem: NSMenuItem!
@@ -26,9 +27,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setupMenu()
+        controller = HoverFocusController(config: Config(), checks: HoverFocusController.liveChecks)
+        coordinator = AppCoordinator(controller: controller, isTrusted: {
+            AccessibilityPermission.isTrusted(prompt: false)
+        })
         loadConfiguration()
-
-        controller = HoverFocusController(config: config, checks: HoverFocusController.liveChecks)
 
         if let button = statusItem.button {
             appearanceObserver = button.observe(\.effectiveAppearance) { [weak self] _, _ in
@@ -38,7 +41,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        startController()
         updateUI()
     }
 
@@ -106,28 +108,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadConfiguration() {
+        let result: Result<Config, ConfigError>
         do {
-            config = try MenuModel.loadConfig()
-            configError = nil
+            result = .success(try MenuModel.loadConfig())
         } catch let err as ConfigError {
-            config = Config()
-            configError = err
+            result = .failure(err)
         } catch {
-            config = Config()
-            configError = .invalid(path: MenuModel.configPath(), reason: error.localizedDescription)
+            result = .failure(.invalid(path: MenuModel.configPath(), reason: error.localizedDescription))
         }
+        coordinator.load(result)
+        syncTrustTimer()
+        updateUI()
     }
 
-    private func startController() {
-        if configError != nil {
-            return
-        }
-        do {
-            try controller.start()
-        } catch let err as ControllerError {
-            statusMenuItem.title = MenuModel.statusLine(for: err)
-        } catch {
-            statusMenuItem.title = "Error: \(error.localizedDescription)"
+    private func syncTrustTimer() {
+        if coordinator.watchingTrust {
+            guard accessibilityTimer == nil else { return }
+            accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.coordinator.trustTick()
+                    self.syncTrustTimer()
+                    self.updateUI()
+                }
+            }
+        } else {
+            accessibilityTimer?.invalidate()
+            accessibilityTimer = nil
         }
     }
 
@@ -141,6 +148,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             statusMenuItem.title = MenuModel.statusLine(for: .paused)
         } else if controller.isRunning {
             statusMenuItem.title = MenuModel.statusLine(for: .running)
+        } else if let startError = coordinator.startError {
+            statusMenuItem.title = MenuModel.statusLine(for: startError)
         }
 
         // Enabled state
@@ -174,8 +183,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleEnabled() {
-        config.enabled.toggle()
-        controller.apply(config)
+        coordinator.update { $0.enabled.toggle() }
+        syncTrustTimer()
         updateUI()
     }
 
@@ -200,39 +209,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func selectIconStyle(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let style = MenuBarIconStyle(rawValue: raw) else { return }
-        config.menuBarIcon = style
-        controller.apply(config)
+        coordinator.update { $0.menuBarIcon = style }
+        syncTrustTimer()
         updateUI()
     }
 
     @objc private func grantAccessibility() {
         _ = AccessibilityPermission.isTrusted(prompt: true)
-        accessibilityAttempts = 0
-        accessibilityTimer?.invalidate()
-        accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.accessibilityAttempts += 1
-                if AccessibilityPermission.isTrusted(prompt: false) {
-                    self.accessibilityTimer?.invalidate()
-                    self.accessibilityTimer = nil
-                    self.startController()
-                    self.updateUI()
-                } else if self.accessibilityAttempts >= 60 {
-                    self.accessibilityTimer?.invalidate()
-                    self.accessibilityTimer = nil
-                }
-            }
-        }
+        syncTrustTimer()
+        updateUI()
     }
 
     @objc private func reloadConfig() {
         loadConfiguration()
-        controller.apply(config)
-        if configError == nil {
-            startController()
-        }
-        updateUI()
     }
 
     @objc private func openConfig() {
