@@ -106,7 +106,7 @@ done
 cmd="${1:-}"
 case "$cmd" in
     find-certificate)
-        if [ -f "$root/security.state" ] && [ "$(cat "$root/security.state")" = "present" ]; then
+        if [ -f "$root/security.state" ] && [ "$(cat "$root/security.state")" != "absent" ]; then
             exit 0
         else
             exit 1
@@ -151,6 +151,19 @@ fi
 for arg in "$@"; do
     echo "<$arg>" >> "$root/codesign.log"
 done
+sign_value=""
+want_sign_value=0
+for arg in "$@"; do
+    if [ "$want_sign_value" -eq 1 ]; then
+        sign_value="$arg"
+        want_sign_value=0
+    elif [ "$arg" = "--sign" ]; then
+        want_sign_value=1
+    fi
+done
+if [ -f "$root/codesign.fail-any" ] || { [ -f "$root/codesign.fail" ] && [ "$sign_value" != "-" ]; }; then
+    exit 1
+fi
 exit 0
 EOF
 sed -i '' "s|__ROOT__|$root|g" "$root/stubs/codesign"
@@ -243,7 +256,8 @@ reset_scratch() {
     rm -rf "${root:?}/home" "$root/launchctl.log" "$root/sudo.log" \
            "$root/security.log" "$root/codesign.log" "$root/openssl.log" \
            "$root/security.state" "$root/security.import-noop" \
-           "$root/req.cnf.seen" "$root/req_dir_mode"
+           "$root/req.cnf.seen" "$root/req_dir_mode" \
+           "$root/codesign.fail" "$root/codesign.fail-any"
     mkdir -p "$root/home"
     export HOME="$root/home"
     APPDIR="$root/home/Applications"
@@ -264,7 +278,7 @@ expected_bootstrap="bootstrap gui/$uid $AGENTDIR/com.wilddog64.hoverfocus.plist"
 reset_scratch
 
 # Snapshot path list under $root (excluding stub logs, states and $root/stubs)
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
 
 # Run make install twice
 make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
@@ -323,7 +337,7 @@ fi
 [ ! -e "$AGENTDIR/com.wilddog64.hoverfocus.plist" ] || { echo "Plist still exists after uninstall" >&2; exit 1; }
 
 # Path list equals the snapshot
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$current_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$current_file"
 if ! cmp -s "$snapshot_file" "$current_file"; then
     echo "Path list differs from snapshot after uninstall:" >&2
     diff "$snapshot_file" "$current_file" >&2 || true
@@ -394,7 +408,7 @@ echo "case 3: PASS"
 # ==============================================================================
 reset_scratch
 echo "Background" > "$root/managername"
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
 
 ssh_err=$(mktemp)
 make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" 2>"$ssh_err"
@@ -443,7 +457,7 @@ echo "case 4: PASS"
 reset_scratch
 odd_appdir="$root/home/Apps & Co|x <y> 'z'"
 mkdir -p "$odd_appdir"
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
 
 make install APPDIR="$odd_appdir" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
 plutil -lint "$AGENTDIR/com.wilddog64.hoverfocus.plist"
@@ -458,7 +472,7 @@ make uninstall APPDIR="$odd_appdir" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" 
 [ ! -e "$AGENTDIR/com.wilddog64.hoverfocus.plist" ] || { echo "Plist still exists after odd path uninstall" >&2; exit 1; }
 assert_no_sudo
 
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$current_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$current_file"
 if ! cmp -s "$snapshot_file" "$current_file"; then
     echo "Path list differs from snapshot after odd path uninstall:" >&2
     diff "$snapshot_file" "$current_file" >&2 || true
@@ -486,7 +500,7 @@ echo "case 6: PASS"
 # ==============================================================================
 # make install APPDIR= exits non-zero and changes nothing
 reset_scratch
-snapshot_before=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort)
+snapshot_before=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort)
 refusal_err=$(mktemp)
 if make install APPDIR="" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" 2>"$refusal_err"; then
     echo "make install APPDIR= unexpectedly succeeded" >&2
@@ -499,7 +513,7 @@ if ! grep -q "APPDIR and AGENTDIR must not be empty" "$refusal_err"; then
     exit 1
 fi
 rm -f "$refusal_err"
-snapshot_after=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort)
+snapshot_after=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -name "codesign.fail" ! -name "codesign.fail-any" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort)
 if [ "$snapshot_before" != "$snapshot_after" ]; then
     echo "make install APPDIR= changed paths" >&2
     exit 1
@@ -713,5 +727,80 @@ fi
 rm -f "$present_out"
 
 echo "case 10: PASS"
+
+echo "case 11: starting signing failure checks"
+reset_scratch
+echo "present" > "$root/security.state"
+touch "$root/codesign.fail"
+fail_out=$(mktemp)
+rc=0
+make bundle CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$fail_out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "case 11a: make bundle unexpectedly succeeded" >&2; exit 1; }
+[ ! -e build/.codesign-identity ] || { echo "case 11a: identity file left behind" >&2; exit 1; }
+[ ! -e build/HoverFocus.app ] || { echo "case 11a: failed bundle left behind" >&2; exit 1; }
+grep -Fq 'signing with "HoverFocus Local Signing" failed' "$fail_out"
+grep -Fq 'probably' "$fail_out"
+if grep -Fq 'unlock-keychain' "$fail_out"; then echo "case 11a: unsafe unlock-keychain advice" >&2; exit 1; fi
+rm -f "$fail_out"
+echo "case 11a: PASS"
+
+reset_scratch
+echo "present" > "$root/security.state"
+mkdir -p "$APPDIR/HoverFocus.app" "$AGENTDIR"
+echo "installed app marker" > "$APPDIR/HoverFocus.app/marker"
+echo "existing agent plist" > "$AGENTDIR/com.wilddog64.hoverfocus.plist"
+cp "$APPDIR/HoverFocus.app/marker" "$root/marker.before"
+cp "$AGENTDIR/com.wilddog64.hoverfocus.plist" "$root/plist.before"
+touch "$root/codesign.fail"
+fail_out=$(mktemp)
+rc=0
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$fail_out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "case 11b: make install unexpectedly succeeded" >&2; exit 1; }
+cmp -s "$root/marker.before" "$APPDIR/HoverFocus.app/marker"
+cmp -s "$root/plist.before" "$AGENTDIR/com.wilddog64.hoverfocus.plist"
+if [ -f "$root/launchctl.log" ] && [ -s "$root/launchctl.log" ]; then echo "case 11b: launchctl was called: $(< "$root/launchctl.log")" >&2; exit 1; fi
+rm -f "$fail_out"
+echo "case 11b: PASS"
+
+reset_scratch
+touch "$root/codesign.fail"
+fail_out=$(mktemp)
+rc=0
+make bundle CODESIGN_IDENTITY="Some Identity" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$fail_out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "case 11c: explicit identity unexpectedly succeeded" >&2; exit 1; }
+[ ! -e build/.codesign-identity ] || { echo "case 11c: identity file left behind" >&2; exit 1; }
+rm -f "$fail_out"
+echo "case 11c: PASS"
+
+reset_scratch
+touch "$root/codesign.fail-any"
+fail_out=$(mktemp)
+rc=0
+make bundle CODESIGN_IDENTITY=- CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$fail_out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "case 11d: ad-hoc signing unexpectedly succeeded" >&2; exit 1; }
+grep -Fq 'ad-hoc signing failed' "$fail_out"
+[ ! -e build/.codesign-identity ] || { echo "case 11d: identity file left behind" >&2; exit 1; }
+rm -f "$fail_out"
+echo "case 11d: PASS"
+
+reset_scratch
+echo "present" > "$root/security.state"
+make bundle CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
+[ "$(cat build/.codesign-identity)" = "HoverFocus Local Signing" ]
+echo "case 11e: PASS"
+
+reset_scratch
+echo "certificate-only" > "$root/security.state"
+rm -rf "$root/tmp"
+mkdir -p "$root/tmp"
+script_out=$(mktemp)
+rc=0
+env -u SSH_CONNECTION TMPDIR="$root/tmp" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" SECURITY="$root/bin/security" \
+    packaging/signing-identity.sh >"$script_out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || { echo "case 12: expected script success, got $rc: $(< "$script_out")" >&2; exit 1; }
+if grep -q "already present" "$script_out"; then echo "case 12: certificate-only state reported already present" >&2; exit 1; fi
+grep -Fq '<req>' "$root/openssl.log"
+rm -f "$script_out"
+echo "case 12: PASS"
 
 echo "install_test passed"

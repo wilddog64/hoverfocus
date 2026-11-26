@@ -47,7 +47,15 @@ bundle: build icon
 		echo "hoverfocus: signing with $$id"; \
 	fi; \
 	rm -f build/.codesign-identity; \
-	"$$CODESIGN" --force --sign "$$id" build/HoverFocus.app; \
+	if ! "$$CODESIGN" --force --sign "$$id" build/HoverFocus.app; then \
+		rm -rf build/HoverFocus.app; \
+		if [ "$$id" = "-" ]; then \
+			echo "hoverfocus: ad-hoc signing failed." >&2; \
+		else \
+			echo "hoverfocus: signing with \"$$id\" failed. If this is an SSH session, the login Keychain is probably locked: run make install at this Mac's keyboard, or build ad-hoc with make install CODESIGN_IDENTITY=- (HoverFocus then needs its Accessibility permission granted again)." >&2; \
+		fi; \
+		exit 1; \
+	fi; \
 	echo "$$id" > build/.codesign-identity
 
 install: bundle

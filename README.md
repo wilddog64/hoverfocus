@@ -29,6 +29,8 @@ make bundle CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 
 Run `make signing-identity` once at the Mac (Keychain prompt: enter the login password, click **Always Allow**), then `make install`; later builds keep the Accessibility grant. Without it builds are ad-hoc and each install needs a re-grant.
 
+Signing with the local identity needs the login Keychain unlocked, so run `make install` at the Mac's keyboard; over SSH it stops with a message rather than installing an unsigned build. `CODESIGN_IDENTITY=-` opts into an ad-hoc build, which needs an Accessibility re-grant.
+
 ```bash
 make signing-identity
 make install

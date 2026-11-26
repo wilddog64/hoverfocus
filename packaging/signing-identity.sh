@@ -18,7 +18,7 @@ if [ -n "${SSH_CONNECTION:-}" ]; then
 fi
 
 keychain="$HOME/Library/Keychains/login.keychain-db"
-if "$SECURITY" find-certificate -c "$SIGNING_NAME" "$keychain" >/dev/null 2>&1; then
+if "$SECURITY" find-identity -p codesigning "$keychain" 2>/dev/null | grep -Fq "\"$SIGNING_NAME\""; then
     echo "already present"
     exit 0
 fi
