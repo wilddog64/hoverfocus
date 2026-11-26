@@ -1,13 +1,17 @@
 APPDIR ?= $(HOME)/Applications
 AGENTDIR ?= $(HOME)/Library/LaunchAgents
 LAUNCHCTL ?= launchctl
-CODESIGN_IDENTITY ?= -
+CODESIGN_IDENTITY ?=
 BOOTOUT_WAIT_TRIES ?= 50
 SWIFT_BUILD_FLAGS ?=
+SECURITY ?= security
+CODESIGN ?= codesign
+OPENSSL ?= /usr/bin/openssl
+SIGNING_NAME ?= HoverFocus Local Signing
 
-export APPDIR AGENTDIR LAUNCHCTL CODESIGN_IDENTITY BOOTOUT_WAIT_TRIES
+export APPDIR AGENTDIR LAUNCHCTL CODESIGN_IDENTITY BOOTOUT_WAIT_TRIES SECURITY CODESIGN OPENSSL SIGNING_NAME
 
-.PHONY: all build selftest icon bundle install uninstall clean
+.PHONY: all build selftest icon bundle install uninstall clean signing-identity
 
 all: build
 
@@ -29,7 +33,22 @@ bundle: build icon
 	cp .build/release/hoverfocus build/HoverFocus.app/Contents/MacOS/hoverfocus
 	cp packaging/Info.plist build/HoverFocus.app/Contents/Info.plist
 	cp build/AppIcon.icns build/HoverFocus.app/Contents/Resources/AppIcon.icns
-	codesign --force --sign "$$CODESIGN_IDENTITY" build/HoverFocus.app
+	@id="$$CODESIGN_IDENTITY"; \
+	if [ -z "$$id" ]; then \
+		if "$$SECURITY" find-identity -p codesigning 2>/dev/null | grep -Fq "\"$$SIGNING_NAME\""; then \
+			id="$$SIGNING_NAME"; \
+		else \
+			id="-"; \
+		fi; \
+	fi; \
+	if [ "$$id" = "-" ]; then \
+		echo "hoverfocus: signing with ad-hoc (-)"; \
+	else \
+		echo "hoverfocus: signing with $$id"; \
+	fi; \
+	rm -f build/.codesign-identity; \
+	"$$CODESIGN" --force --sign "$$id" build/HoverFocus.app; \
+	echo "$$id" > build/.codesign-identity
 
 install: bundle
 	@if [ -z "$$APPDIR" ] || [ -z "$$AGENTDIR" ]; then \
@@ -41,11 +60,13 @@ install: bundle
 	cp packaging/com.wilddog64.hoverfocus.plist.tmpl "$$AGENTDIR/com.wilddog64.hoverfocus.plist"
 	plutil -replace ProgramArguments -array "$$AGENTDIR/com.wilddog64.hoverfocus.plist"
 	plutil -insert ProgramArguments.0 -string "$$APPDIR/HoverFocus.app/Contents/MacOS/hoverfocus" "$$AGENTDIR/com.wilddog64.hoverfocus.plist"
-	@if [ "$$CODESIGN_IDENTITY" = "-" ]; then \
+	@id=$$(cat build/.codesign-identity 2>/dev/null || echo "$$CODESIGN_IDENTITY"); \
+	if [ "$$id" = "-" ]; then \
 		echo "hoverfocus: ad-hoc signed build. If the menu shows \"Needs Accessibility permission\" although HoverFocus is enabled"; \
 		echo "in System Settings, reset the old grant and grant again:"; \
 		echo "  tccutil reset Accessibility com.wilddog64.hoverfocus"; \
 		echo "then enable HoverFocus in System Settings > Privacy & Security > Accessibility."; \
+		echo "run \"make signing-identity\" once at this Mac's keyboard so later builds keep the grant."; \
 	fi
 	@mgr=$$("$$LAUNCHCTL" managername 2>/dev/null || true); \
 	if [ "$$mgr" != "Aqua" ]; then \
@@ -86,6 +107,9 @@ uninstall:
 	fi
 	rm -f "$$AGENTDIR/com.wilddog64.hoverfocus.plist"
 	rm -rf "$$APPDIR/HoverFocus.app"
+
+signing-identity:
+	packaging/signing-identity.sh
 
 clean:
 	rm -rf build .build

@@ -19,7 +19,7 @@ make selftest
 make bundle
 ```
 
-By default, `make bundle` signs the app using ad-hoc code signing (`-`). You can supply a custom signing identity:
+By default, `make bundle` signs the app using the "HoverFocus Local Signing" identity when the login Keychain has it, else ad-hoc (`-`). You can supply a custom signing identity:
 
 ```bash
 make bundle CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
@@ -27,9 +27,10 @@ make bundle CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 
 ## Installation
 
-Install the app bundle and launch agent:
+Run `make signing-identity` once at the Mac (Keychain prompt: enter the login password, click **Always Allow**), then `make install`; later builds keep the Accessibility grant. Without it builds are ad-hoc and each install needs a re-grant.
 
 ```bash
+make signing-identity
 make install
 ```
 
@@ -68,7 +69,7 @@ When using ad-hoc code signing, macOS invalidates Accessibility trust whenever t
 tccutil reset Accessibility com.wilddog64.hoverfocus
 ```
 
-then enable HoverFocus in System Settings > Privacy & Security > Accessibility.
+After `tccutil reset`, quit System Settings if already open, reopen **System Settings > Privacy & Security > Accessibility**, remove HoverFocus with **−**, then add it again with **+**.
 
 ## Menu Bar Interface
 
@@ -98,6 +99,22 @@ log stream --predicate 'subsystem == "com.wilddog64.hoverfocus"'
 ## Configuration
 
 See [docs/config.md](docs/config.md) for full descriptions of all configuration keys and options. A template configuration is available in `config.example.json`.
+
+## Tested apps
+
+| App | Typing lands without raise | Cmd shortcuts | Notes |
+|---|---|---|---|
+| TextEdit | pending v0.0.3 live check | pending v0.0.3 live check | |
+| TextEdit second window (same app) | pending v0.0.3 live check | pending v0.0.3 live check | |
+| Safari | pending v0.0.3 live check | pending v0.0.3 live check | |
+| Chrome | pending v0.0.3 live check | pending v0.0.3 live check | |
+| Mail | pending v0.0.3 live check | pending v0.0.3 live check | |
+| Terminal.app | pending v0.0.3 live check | pending v0.0.3 live check | |
+| iTerm2 | pending v0.0.3 live check | pending v0.0.3 live check | |
+| Slack | pending v0.0.3 live check | pending v0.0.3 live check | |
+| VS Code | pending v0.0.3 live check | pending v0.0.3 live check | |
+
+The 2026-11-25 probe on macOS 26.5.1 passed **typing without raise** for the eight apps other than iTerm2; iTerm2 and Cmd shortcuts are checked at the v0.0.3 release live check, which fills the table.
 
 ## Known Limitations
 

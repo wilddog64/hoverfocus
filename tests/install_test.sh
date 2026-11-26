@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset CODESIGN_IDENTITY SIGNING_NAME
 
-# Build the bundle first
-make bundle
+# Build the bundle first (ad-hoc) and verify with real codesign
+make bundle CODESIGN_IDENTITY=-
+/usr/bin/codesign -v build/HoverFocus.app
 
 # Create scratch root
 root=$(mktemp -d)
@@ -11,11 +13,15 @@ current_file=$(mktemp)
 trap 'rm -rf "$root" "$snapshot_file" "$current_file"' EXIT
 
 touch "$root/HF_TEST_ROOT"
-mkdir -p "$root/home" "$root/bin"
+mkdir -p "$root/home" "$root/bin" "$root/stubs"
 export HOME="$root/home"
 APPDIR="$root/home/Applications"
 AGENTDIR="$root/home/Library/LaunchAgents"
 mkdir -p "$APPDIR" "$AGENTDIR"
+
+CODESIGN="$root/stubs/codesign"
+OPENSSL="$root/stubs/openssl"
+export CODESIGN OPENSSL
 
 # Stub launchctl in $root/bin
 # m4-air, macOS 26.5.2, 2026-11-23: print of a missing service rc 113; managername over SSH prints Background
@@ -63,11 +69,163 @@ LAUNCHCTL="$root/bin/launchctl"
 cat << 'EOF' > "$root/bin/sudo"
 #!/usr/bin/env bash
 root="__ROOT__"
+if [ ! -f "$root/HF_TEST_ROOT" ]; then
+    exit 97
+fi
 echo "$@" >> "$root/sudo.log"
 exit 97
 EOF
 sed -i '' "s|__ROOT__|$root|g" "$root/bin/sudo"
 chmod +x "$root/bin/sudo"
+
+# Stub security in $root/bin (on PATH)
+cat << 'EOF' > "$root/bin/security"
+#!/usr/bin/env bash
+root="__ROOT__"
+if [ ! -f "$root/HF_TEST_ROOT" ]; then
+    exit 97
+fi
+
+redact_next=0
+for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+        if [ -z "$arg" ]; then
+            echo "security stub: empty password after -P" >&2
+            exit 1
+        fi
+        echo "<redacted>" >> "$root/security.log"
+        redact_next=0
+    else
+        echo "<$arg>" >> "$root/security.log"
+        if [ "$arg" = "-P" ]; then
+            redact_next=1
+        fi
+    fi
+done
+
+cmd="${1:-}"
+case "$cmd" in
+    find-certificate)
+        if [ -f "$root/security.state" ] && [ "$(cat "$root/security.state")" = "present" ]; then
+            exit 0
+        else
+            exit 1
+        fi
+        ;;
+    find-identity)
+        has_v=0
+        for a in "$@"; do
+            if [ "$a" = "-v" ]; then
+                has_v=1
+            fi
+        done
+        if [ "$has_v" -eq 1 ]; then
+            exit 0
+        fi
+        if [ -f "$root/security.state" ] && [ "$(cat "$root/security.state")" = "present" ]; then
+            echo '  1) 1234567890abcdef1234567890abcdef12345678 "HoverFocus Local Signing" (CSSMERR_TP_NOT_TRUSTED)'
+        fi
+        exit 0
+        ;;
+    import)
+        if [ ! -f "$root/security.import-noop" ]; then
+            echo "present" > "$root/security.state"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+sed -i '' "s|__ROOT__|$root|g" "$root/bin/security"
+chmod +x "$root/bin/security"
+
+# Stub codesign in $root/stubs (not on PATH)
+cat << 'EOF' > "$root/stubs/codesign"
+#!/usr/bin/env bash
+root="__ROOT__"
+if [ ! -f "$root/HF_TEST_ROOT" ]; then
+    exit 97
+fi
+for arg in "$@"; do
+    echo "<$arg>" >> "$root/codesign.log"
+done
+exit 0
+EOF
+sed -i '' "s|__ROOT__|$root|g" "$root/stubs/codesign"
+chmod +x "$root/stubs/codesign"
+
+# Stub openssl in $root/stubs (not on PATH)
+cat << 'EOF' > "$root/stubs/openssl"
+#!/usr/bin/env bash
+root="__ROOT__"
+if [ ! -f "$root/HF_TEST_ROOT" ]; then
+    exit 97
+fi
+for arg in "$@"; do
+    echo "<$arg>" >> "$root/openssl.log"
+done
+
+cmd="${1:-}"
+case "$cmd" in
+    rand)
+        echo "STUB_P12_SECRET"
+        exit 0
+        ;;
+    req)
+        config_file=""
+        keyout_file=""
+        out_file=""
+        prev=""
+        for a in "$@"; do
+            if [ "$prev" = "-config" ]; then
+                config_file="$a"
+            elif [ "$prev" = "-keyout" ]; then
+                keyout_file="$a"
+            elif [ "$prev" = "-out" ]; then
+                out_file="$a"
+            fi
+            prev="$a"
+        done
+        if [ -n "$config_file" ] && [ -f "$config_file" ]; then
+            cp "$config_file" "$root/req.cnf.seen"
+            cfg_dir=$(dirname "$config_file")
+            if /usr/bin/stat -f "%Lp" "$cfg_dir" >/dev/null 2>&1; then
+                /usr/bin/stat -f "%Lp" "$cfg_dir" > "$root/req_dir_mode"
+            else
+                stat -c "%a" "$cfg_dir" > "$root/req_dir_mode"
+            fi
+        fi
+        if [ -n "$keyout_file" ]; then
+            touch "$keyout_file"
+        fi
+        if [ -n "$out_file" ]; then
+            touch "$out_file"
+        fi
+        exit 0
+        ;;
+    pkcs12)
+        out_file=""
+        prev=""
+        for a in "$@"; do
+            if [ "$prev" = "-out" ]; then
+                out_file="$a"
+            fi
+            prev="$a"
+        done
+        if [ -n "$out_file" ]; then
+            touch "$out_file"
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+sed -i '' "s|__ROOT__|$root|g" "$root/stubs/openssl"
+chmod +x "$root/stubs/openssl"
 
 export PATH="$root/bin:$PATH"
 
@@ -82,7 +240,10 @@ assert_no_sudo() {
 }
 
 reset_scratch() {
-    rm -rf "${root:?}/home" "$root/launchctl.log" "$root/sudo.log"
+    rm -rf "${root:?}/home" "$root/launchctl.log" "$root/sudo.log" \
+           "$root/security.log" "$root/codesign.log" "$root/openssl.log" \
+           "$root/security.state" "$root/security.import-noop" \
+           "$root/req.cnf.seen" "$root/req_dir_mode"
     mkdir -p "$root/home"
     export HOME="$root/home"
     APPDIR="$root/home/Applications"
@@ -102,12 +263,12 @@ expected_bootstrap="bootstrap gui/$uid $AGENTDIR/com.wilddog64.hoverfocus.plist"
 # ==============================================================================
 reset_scratch
 
-# Snapshot path list under $root (excluding launchctl.log and sudo.log)
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort > "$snapshot_file"
+# Snapshot path list under $root (excluding stub logs, states and $root/stubs)
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
 
 # Run make install twice
-make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME"
-make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME"
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
 
 # Check bundle and plist exist after install
 [ -d "$APPDIR/HoverFocus.app" ] || { echo "Bundle missing after install" >&2; exit 1; }
@@ -146,7 +307,7 @@ fi
 assert_no_sudo
 
 # Run make uninstall
-make uninstall APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME"
+make uninstall APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
 
 # Check log has bootout for uninstall
 filtered_log=$(grep -v '^managername' "$root/launchctl.log")
@@ -162,7 +323,7 @@ fi
 [ ! -e "$AGENTDIR/com.wilddog64.hoverfocus.plist" ] || { echo "Plist still exists after uninstall" >&2; exit 1; }
 
 # Path list equals the snapshot
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort > "$current_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$current_file"
 if ! cmp -s "$snapshot_file" "$current_file"; then
     echo "Path list differs from snapshot after uninstall:" >&2
     diff "$snapshot_file" "$current_file" >&2 || true
@@ -170,6 +331,7 @@ if ! cmp -s "$snapshot_file" "$current_file"; then
 fi
 
 assert_no_sudo
+echo "case 1: PASS"
 
 # ==============================================================================
 # Case 2: wait (print_loaded=3 -> 1 bootout, 4 prints, 1 bootstrap)
@@ -177,7 +339,7 @@ assert_no_sudo
 reset_scratch
 echo "3" > "$root/print_loaded"
 
-make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME"
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
 assert_no_sudo
 
 wait_log=$(grep -v '^managername' "$root/launchctl.log")
@@ -199,6 +361,7 @@ if [ "$w_line1" != "$expected_bootout" ] || \
     echo "Wait case unexpected launchctl log: $(< "$root/launchctl.log")" >&2
     exit 1
 fi
+echo "case 2: PASS"
 
 # ==============================================================================
 # Case 3: timeout (print_loaded=1000, BOOTOUT_WAIT_TRIES=3 -> fail, no bootstrap)
@@ -207,7 +370,7 @@ reset_scratch
 echo "1000" > "$root/print_loaded"
 timeout_err=$(mktemp)
 
-if make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" BOOTOUT_WAIT_TRIES=3 2>"$timeout_err"; then
+if make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" BOOTOUT_WAIT_TRIES=3 CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" 2>"$timeout_err"; then
     echo "make install unexpectedly succeeded during timeout test" >&2
     rm -f "$timeout_err"
     exit 1
@@ -224,16 +387,17 @@ if grep -q "^bootstrap" "$root/launchctl.log"; then
     exit 1
 fi
 assert_no_sudo
+echo "case 3: PASS"
 
 # ==============================================================================
 # Case 4: SSH session (managername=Background)
 # ==============================================================================
 reset_scratch
 echo "Background" > "$root/managername"
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort > "$snapshot_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
 
 ssh_err=$(mktemp)
-make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" 2>"$ssh_err"
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" 2>"$ssh_err"
 
 [ -d "$APPDIR/HoverFocus.app" ] || { echo "Bundle missing after SSH install" >&2; exit 1; }
 [ -f "$AGENTDIR/com.wilddog64.hoverfocus.plist" ] || { echo "Plist missing after SSH install" >&2; exit 1; }
@@ -253,7 +417,7 @@ rm -f "$ssh_err"
 assert_no_sudo
 
 ssh_uninst_err=$(mktemp)
-make uninstall APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" 2>"$ssh_uninst_err"
+make uninstall APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" 2>"$ssh_uninst_err"
 
 [ ! -e "$APPDIR/HoverFocus.app" ] || { echo "Bundle still exists after SSH uninstall" >&2; exit 1; }
 [ ! -e "$AGENTDIR/com.wilddog64.hoverfocus.plist" ] || { echo "Plist still exists after SSH uninstall" >&2; exit 1; }
@@ -271,6 +435,7 @@ if ! grep -Fq "$expected_ssh_bootout" "$ssh_uninst_err"; then
 fi
 rm -f "$ssh_uninst_err"
 assert_no_sudo
+echo "case 4: PASS"
 
 # ==============================================================================
 # Case 5: odd path (APPDIR with space, &, |, <, >, ')
@@ -278,9 +443,9 @@ assert_no_sudo
 reset_scratch
 odd_appdir="$root/home/Apps & Co|x <y> 'z'"
 mkdir -p "$odd_appdir"
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort > "$snapshot_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$snapshot_file"
 
-make install APPDIR="$odd_appdir" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME"
+make install APPDIR="$odd_appdir" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
 plutil -lint "$AGENTDIR/com.wilddog64.hoverfocus.plist"
 [ "$(plutil -extract ProgramArguments raw "$AGENTDIR/com.wilddog64.hoverfocus.plist")" = "1" ]
 [ "$(plutil -extract ProgramArguments.0 raw "$AGENTDIR/com.wilddog64.hoverfocus.plist")" = "$odd_appdir/HoverFocus.app/Contents/MacOS/hoverfocus" ]
@@ -288,24 +453,25 @@ plutil -lint "$AGENTDIR/com.wilddog64.hoverfocus.plist"
 [ -d "$odd_appdir/HoverFocus.app" ] || { echo "Bundle missing after odd path install" >&2; exit 1; }
 assert_no_sudo
 
-make uninstall APPDIR="$odd_appdir" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME"
+make uninstall APPDIR="$odd_appdir" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
 [ ! -e "$odd_appdir/HoverFocus.app" ] || { echo "Bundle still exists after odd path uninstall" >&2; exit 1; }
 [ ! -e "$AGENTDIR/com.wilddog64.hoverfocus.plist" ] || { echo "Plist still exists after odd path uninstall" >&2; exit 1; }
 assert_no_sudo
 
-find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort > "$current_file"
+find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort > "$current_file"
 if ! cmp -s "$snapshot_file" "$current_file"; then
     echo "Path list differs from snapshot after odd path uninstall:" >&2
     diff "$snapshot_file" "$current_file" >&2 || true
     exit 1
 fi
+echo "case 5: PASS"
 
 # ==============================================================================
 # Case 6: hint (CODESIGN_IDENTITY=-)
 # ==============================================================================
 reset_scratch
 hint_out=$(mktemp)
-make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN_IDENTITY="-" >"$hint_out"
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN_IDENTITY="-" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$hint_out"
 if ! grep -Fq "tccutil reset Accessibility com.wilddog64.hoverfocus" "$hint_out"; then
     echo "Expected hint in install output: $(< "$hint_out")" >&2
     rm -f "$hint_out"
@@ -313,15 +479,16 @@ if ! grep -Fq "tccutil reset Accessibility com.wilddog64.hoverfocus" "$hint_out"
 fi
 rm -f "$hint_out"
 assert_no_sudo
+echo "case 6: PASS"
 
 # ==============================================================================
 # Regression checks from v0.0.1
 # ==============================================================================
 # make install APPDIR= exits non-zero and changes nothing
 reset_scratch
-snapshot_before=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort)
+snapshot_before=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort)
 refusal_err=$(mktemp)
-if make install APPDIR="" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" 2>"$refusal_err"; then
+if make install APPDIR="" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" 2>"$refusal_err"; then
     echo "make install APPDIR= unexpectedly succeeded" >&2
     rm -f "$refusal_err"
     exit 1
@@ -332,7 +499,7 @@ if ! grep -q "APPDIR and AGENTDIR must not be empty" "$refusal_err"; then
     exit 1
 fi
 rm -f "$refusal_err"
-snapshot_after=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" | sort)
+snapshot_after=$(find "$root" ! -name "launchctl.log" ! -name "sudo.log" ! -name "security.log" ! -name "codesign.log" ! -name "openssl.log" ! -name "security.state" ! -name "security.import-noop" ! -name "req.cnf.seen" ! -name "req_dir_mode" ! -path "$root/stubs" ! -path "$root/stubs/*" | sort)
 if [ "$snapshot_before" != "$snapshot_after" ]; then
     echo "make install APPDIR= changed paths" >&2
     exit 1
@@ -350,7 +517,201 @@ info_plist="build/HoverFocus.app/Contents/Info.plist"
 # Check AppIcon.icns exists
 [ -f "build/HoverFocus.app/Contents/Resources/AppIcon.icns" ]
 
-# Check codesign passes
-codesign -v build/HoverFocus.app
+# ==============================================================================
+# Case 8: identity absent (positive control)
+# ==============================================================================
+reset_scratch
+hint_out=$(mktemp)
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$hint_out"
+
+[ -f "$root/codesign.log" ] || { echo "codesign.log missing in case 8" >&2; exit 1; }
+sign_line=$(grep -n '^<--sign>$' "$root/codesign.log" | cut -d: -f1)
+val_line=$((sign_line + 1))
+[ "$(sed -n "${val_line}p" "$root/codesign.log")" = "<->" ]
+
+if ! grep -Fq "tccutil reset Accessibility com.wilddog64.hoverfocus" "$hint_out"; then
+    echo "Expected tccutil hint in case 8 output: $(< "$hint_out")" >&2
+    rm -f "$hint_out"
+    exit 1
+fi
+if ! grep -Fq "make signing-identity" "$hint_out"; then
+    echo "Expected make signing-identity hint in case 8 output: $(< "$hint_out")" >&2
+    rm -f "$hint_out"
+    exit 1
+fi
+rm -f "$hint_out"
+assert_no_sudo
+echo "case 8: PASS"
+
+# ==============================================================================
+# Case 7: identity present
+# ==============================================================================
+reset_scratch
+echo "present" > "$root/security.state"
+
+make bundle CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
+[ -f "$root/codesign.log" ] || { echo "codesign.log missing in case 7" >&2; exit 1; }
+sign_line=$(grep -n '^<--sign>$' "$root/codesign.log" | cut -d: -f1)
+val_line=$((sign_line + 1))
+[ "$(sed -n "${val_line}p" "$root/codesign.log")" = "<HoverFocus Local Signing>" ]
+
+hint_out=$(mktemp)
+make install APPDIR="$APPDIR" AGENTDIR="$AGENTDIR" LAUNCHCTL="$LAUNCHCTL" HOME="$HOME" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" >"$hint_out"
+if grep -Fq "tccutil" "$hint_out"; then
+    echo "Unexpected tccutil hint in case 7 output: $(< "$hint_out")" >&2
+    rm -f "$hint_out"
+    exit 1
+fi
+rm -f "$hint_out"
+assert_no_sudo
+echo "case 7: PASS"
+
+# ==============================================================================
+# Case 9: explicit override
+# ==============================================================================
+reset_scratch
+echo "present" > "$root/security.state"
+
+make bundle CODESIGN_IDENTITY="-" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL"
+[ -f "$root/codesign.log" ] || { echo "codesign.log missing in case 9" >&2; exit 1; }
+sign_line=$(grep -n '^<--sign>$' "$root/codesign.log" | cut -d: -f1)
+val_line=$((sign_line + 1))
+[ "$(sed -n "${val_line}p" "$root/codesign.log")" = "<->" ]
+
+if [ -f "$root/security.log" ] && grep -Fq "<find-identity>" "$root/security.log"; then
+    echo "Unexpected find-identity call logged in case 9: $(< "$root/security.log")" >&2
+    exit 1
+fi
+echo "case 9: PASS"
+
+# ==============================================================================
+# Case 10: signing-identity script
+# ==============================================================================
+# Sub-case: SSH_CONNECTION=x -> rc 2, no openssl call
+reset_scratch
+rm -rf "${root:?}/tmp"
+mkdir -p "$root/tmp"
+ssh_out=$(mktemp)
+rc=0
+SSH_CONNECTION=x TMPDIR="$root/tmp" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" SECURITY="$root/bin/security" \
+    packaging/signing-identity.sh >"$ssh_out" 2>&1 || rc=$?
+if [ "$rc" -ne 2 ]; then
+    echo "Expected rc 2 when SSH_CONNECTION is set, got $rc: $(< "$ssh_out")" >&2
+    rm -f "$ssh_out"
+    exit 1
+fi
+if [ -f "$root/openssl.log" ] && [ -s "$root/openssl.log" ]; then
+    echo "Unexpected openssl call when SSH_CONNECTION is set: $(< "$root/openssl.log")" >&2
+    rm -f "$ssh_out"
+    exit 1
+fi
+rm -f "$ssh_out"
+
+# Sub-case: Cert absent -> req, rand, pkcs12, import, find-identity, tmp empty, no leak
+reset_scratch
+rm -rf "${root:?}/tmp"
+mkdir -p "$root/tmp"
+script_out=$(mktemp)
+rc=0
+env -u SSH_CONNECTION TMPDIR="$root/tmp" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" SECURITY="$root/bin/security" \
+    packaging/signing-identity.sh >"$script_out" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "Expected rc 0 for signing-identity script, got $rc. Output: $(< "$script_out")" >&2
+    rm -f "$script_out"
+    exit 1
+fi
+
+[ -f "$root/openssl.log" ] || { echo "openssl.log missing in case 10" >&2; exit 1; }
+req_line=$(grep -n '^<req>$' "$root/openssl.log" | cut -d: -f1)
+rand_line=$(grep -n '^<rand>$' "$root/openssl.log" | cut -d: -f1)
+pkcs12_line=$(grep -n '^<pkcs12>$' "$root/openssl.log" | cut -d: -f1)
+if [ -z "$req_line" ] || [ -z "$rand_line" ] || [ -z "$pkcs12_line" ] || \
+   [ "$req_line" -ge "$rand_line" ] || [ "$rand_line" -ge "$pkcs12_line" ]; then
+    echo "openssl.log calls not in req, rand, pkcs12 order" >&2
+    exit 1
+fi
+
+passout_line=$(grep -n '^<-passout>$' "$root/openssl.log" | cut -d: -f1)
+passout_arg_line=$((passout_line + 1))
+[ "$(sed -n "${passout_arg_line}p" "$root/openssl.log")" = "<env:P12_PASS>" ]
+if grep -q "pass:" "$root/openssl.log"; then
+    echo "pass: found on openssl argv: $(< "$root/openssl.log")" >&2
+    exit 1
+fi
+
+grep -Fq "<import>" "$root/security.log"
+k_line=$(grep -n '^<-k>$' "$root/security.log" | cut -d: -f1)
+k_val_line=$((k_line + 1))
+[ "$(sed -n "${k_val_line}p" "$root/security.log")" = "<$root/home/Library/Keychains/login.keychain-db>" ]
+grep -Fq "<-T>" "$root/security.log"
+
+[ -f "$root/security.state" ] && [ "$(cat "$root/security.state")" = "present" ]
+
+[ -f "$root/req.cnf.seen" ] || { echo "req.cnf.seen missing" >&2; exit 1; }
+grep -Fq "prompt = no" "$root/req.cnf.seen"
+grep -Fq "x509_extensions = ext" "$root/req.cnf.seen"
+grep -Fq "CN = HoverFocus Local Signing" "$root/req.cnf.seen"
+grep -Fq "codeSigning" "$root/req.cnf.seen"
+
+[ -f "$root/req_dir_mode" ] && [ "$(cat "$root/req_dir_mode")" = "700" ]
+
+tmp_contents=$(ls -A "$root/tmp")
+[ -z "$tmp_contents" ] || { echo "$root/tmp not empty after exit: $tmp_contents" >&2; exit 1; }
+
+if grep -q "STUB_P12_SECRET" "$root/security.log" "$root/codesign.log" "$root/openssl.log" 2>/dev/null; then
+    echo "STUB_P12_SECRET leaked in stub logs" >&2
+    exit 1
+fi
+if grep -q "STUB_P12_SECRET" "$script_out"; then
+    echo "STUB_P12_SECRET leaked in script output: $(< "$script_out")" >&2
+    exit 1
+fi
+rm -f "$script_out"
+
+# Sub-case: Import no-op (security.import-noop) -> rc 1 and $root/tmp empty
+reset_scratch
+rm -rf "${root:?}/tmp"
+mkdir -p "$root/tmp"
+touch "$root/security.import-noop"
+noop_out=$(mktemp)
+rc=0
+env -u SSH_CONNECTION TMPDIR="$root/tmp" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" SECURITY="$root/bin/security" \
+    packaging/signing-identity.sh >"$noop_out" 2>&1 || rc=$?
+if [ "$rc" -ne 1 ]; then
+    echo "Expected rc 1 for import no-op, got $rc" >&2
+    rm -f "$noop_out"
+    exit 1
+fi
+tmp_contents=$(ls -A "$root/tmp")
+[ -z "$tmp_contents" ] || { echo "$root/tmp not empty after import no-op failure: $tmp_contents" >&2; exit 1; }
+rm -f "$noop_out"
+
+# Sub-case: Cert present -> already present, no openssl call
+reset_scratch
+rm -rf "${root:?}/tmp"
+mkdir -p "$root/tmp"
+echo "present" > "$root/security.state"
+present_out=$(mktemp)
+rc=0
+env -u SSH_CONNECTION TMPDIR="$root/tmp" CODESIGN="$CODESIGN" OPENSSL="$OPENSSL" SECURITY="$root/bin/security" \
+    packaging/signing-identity.sh >"$present_out" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "Expected rc 0 for cert present, got $rc" >&2
+    rm -f "$present_out"
+    exit 1
+fi
+if ! grep -q "already present" "$present_out"; then
+    echo "Expected 'already present' in output: $(< "$present_out")" >&2
+    rm -f "$present_out"
+    exit 1
+fi
+if [ -f "$root/openssl.log" ] && [ -s "$root/openssl.log" ]; then
+    echo "Unexpected openssl call when cert already present: $(< "$root/openssl.log")" >&2
+    rm -f "$present_out"
+    exit 1
+fi
+rm -f "$present_out"
+
+echo "case 10: PASS"
 
 echo "install_test passed"
