@@ -34,7 +34,8 @@ public final class HoverFocusController: FocusControlling {
     private var source: CFRunLoopSource?
     private var timer: Timer?
     private var lastPointer: CGPoint?
-    private var elements: [UInt32: AXUIElement] = [:]
+    private var elements = RecentCache<UInt32, AXUIElement>(capacity: 32)
+    private var accessibilityTreePids = RecentCache<Int32, Bool>(capacity: 256)
     private let logger = Logger(subsystem: "com.wilddog64.hoverfocus", category: "focus")
 
     public init(config: Config, checks: StartChecks = HoverFocusController.liveChecks) {
@@ -131,8 +132,16 @@ public final class HoverFocusController: FocusControlling {
         AXUIElementSetMessagingTimeout(system, 0.2)
         var value: AXUIElement?
         let result = AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &value)
-        guard result == .success, let value,
-              CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() else { return nil }
+        guard result == .success, let value else {
+            enableAccessibilityTree(pid: ownerPidAt(x: x, y: y))
+            return nil
+        }
+        var originalOwner: pid_t = 0
+        AXUIElementGetPid(value, &originalOwner)
+        guard CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID() else {
+            enableAccessibilityTree(pid: originalOwner > 0 ? Int32(originalOwner) : ownerPidAt(x: x, y: y))
+            return nil
+        }
         var element = value
         for _ in 0..<8 {
             var role: CFTypeRef?
@@ -144,17 +153,20 @@ public final class HoverFocusController: FocusControlling {
             )
             guard parentResult == .success, let parent,
                   CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
-            element = unsafeBitCast(parent, to: AXUIElement.self)
+            element = unsafeDowncast(parent, to: AXUIElement.self)
         }
         var windowID: UInt32 = 0
         let idResult = hf_ax_window_id(Unmanaged.passUnretained(element).toOpaque(), &windowID)
-        guard idResult == 0 else { return nil }
+        guard idResult == 0 else {
+            enableAccessibilityTree(pid: originalOwner > 0 ? Int32(originalOwner) : ownerPidAt(x: x, y: y))
+            return nil
+        }
         var subrole: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
         var owner: pid_t = 0
         AXUIElementGetPid(element, &owner)
         let app = NSRunningApplication(processIdentifier: owner)
-        elements[windowID] = element
+        elements.set(element, for: windowID)
         return WindowTarget(
             windowID: windowID,
             pid: Int32(owner),
@@ -164,22 +176,7 @@ public final class HoverFocusController: FocusControlling {
     }
 
     private func systemState() -> SystemState {
-        var focusedWindowID: UInt32?
-        if let app = NSWorkspace.shared.frontmostApplication {
-            let application = AXUIElementCreateApplication(app.processIdentifier)
-            var focused: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(
-                application, kAXFocusedWindowAttribute as CFString, &focused
-            )
-            if result == .success, let focused,
-               CFGetTypeID(focused) == AXUIElementGetTypeID() {
-                let element = unsafeBitCast(focused, to: AXUIElement.self)
-                var windowID: UInt32 = 0
-                if hf_ax_window_id(Unmanaged.passUnretained(element).toOpaque(), &windowID) == 0 {
-                    focusedWindowID = windowID
-                }
-            }
-        }
+        let focusedWindowID = frontmostWindowID()
         let point = lastPointer
         let x = point?.x ?? 0
         let y = point?.y ?? 0
@@ -193,6 +190,43 @@ public final class HoverFocusController: FocusControlling {
             menuOpen: menuOpen,
             missionControlActive: missionControlActive
         )
+    }
+
+    private func frontmostWindowID() -> UInt32? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 0.2)
+        var focused: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &focused)
+        guard result == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = unsafeDowncast(focused, to: AXUIElement.self)
+        var windowID: UInt32 = 0
+        return hf_ax_window_id(Unmanaged.passUnretained(element).toOpaque(), &windowID) == 0 ? windowID : nil
+    }
+
+    private func ownerPidAt(x: Double, y: Double) -> Int32 {
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return 0 }
+        for window in info {
+            guard let layer = window[kCGWindowLayer as String] as? Int, layer == 0,
+                  let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0,
+                  let pid = window[kCGWindowOwnerPID as String] as? Int,
+                  let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
+                  let left = bounds["X"], let top = bounds["Y"],
+                  let width = bounds["Width"], let height = bounds["Height"],
+                  x >= left && x <= left + width && y >= top && y <= top + height else { continue }
+            return Int32(pid)
+        }
+        return 0
+    }
+
+    private func enableAccessibilityTree(pid: Int32) {
+        guard pid > 0, pid != Int32(getpid()), accessibilityTreePids.value(for: pid) == nil else { return }
+        let app = AXUIElementCreateApplication(pid_t(pid))
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        let rc = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, true as CFTypeRef)
+        accessibilityTreePids.set(true, for: pid)
+        logger.info("ax-enable pid \(pid, privacy: .public) rc \(rc.rawValue, privacy: .public)")
     }
 
     private func menuWindowIsAt(x: CGFloat, y: CGFloat) -> Bool {
@@ -234,6 +268,7 @@ public final class HoverFocusController: FocusControlling {
         case .focus(let value): target = value; raise = false
         case .focusAndRaise(let value): target = value; raise = true
         }
+        enableAccessibilityTree(pid: target.pid)
         var result: Int32
         if raise {
             let application = AXUIElementCreateApplication(pid_t(target.pid))
@@ -241,12 +276,14 @@ public final class HoverFocusController: FocusControlling {
             let appResult = AXUIElementSetAttributeValue(
                 application, kAXFrontmostAttribute as CFString, value
             )
-            let windowResult = elements[target.windowID].map {
+            let windowResult = elements.value(for: target.windowID).map {
                 AXUIElementPerformAction($0, kAXRaiseAction as CFString)
             } ?? .failure
             result = appResult == .success && windowResult == .success ? 0 : -1
         } else {
-            result = Int32(hf_focus_without_raise(target.pid, target.windowID))
+            let frontPid = Int32(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)
+            let frontWid = frontmostWindowID() ?? 0
+            result = Int32(hf_focus_without_raise(target.pid, target.windowID, frontPid, frontWid))
         }
         if result != 0 {
             logger.error("focus failed for window \(target.windowID, privacy: .public)")
