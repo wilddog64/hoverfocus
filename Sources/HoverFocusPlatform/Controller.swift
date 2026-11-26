@@ -142,19 +142,29 @@ public final class HoverFocusController: FocusControlling {
             enableAccessibilityTree(pid: originalOwner > 0 ? Int32(originalOwner) : ownerPidAt(x: x, y: y))
             return nil
         }
-        var element = value
-        for _ in 0..<8 {
-            var role: CFTypeRef?
-            _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
-            if role as? String == kAXWindowRole as String { break }
-            var parent: CFTypeRef?
-            let parentResult = AXUIElementCopyAttributeValue(
-                element, kAXParentAttribute as CFString, &parent
-            )
-            guard parentResult == .success, let parent,
-                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
-            element = unsafeDowncast(parent, to: AXUIElement.self)
-        }
+        let element = WindowResolver.resolve(
+            hit: value,
+            window: { el in
+                var attr: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(el, kAXWindowAttribute as CFString, &attr) == .success,
+                      let attr,
+                      CFGetTypeID(attr) == AXUIElementGetTypeID() else { return nil }
+                return unsafeDowncast(attr, to: AXUIElement.self)
+            },
+            role: { el in
+                var attr: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &attr) == .success,
+                      let attr else { return nil }
+                return attr as? String
+            },
+            parent: { el in
+                var attr: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(el, kAXParentAttribute as CFString, &attr) == .success,
+                      let attr,
+                      CFGetTypeID(attr) == AXUIElementGetTypeID() else { return nil }
+                return unsafeDowncast(attr, to: AXUIElement.self)
+            }
+        )
         var windowID: UInt32 = 0
         let idResult = hf_ax_window_id(Unmanaged.passUnretained(element).toOpaque(), &windowID)
         guard idResult == 0 else {

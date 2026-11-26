@@ -496,5 +496,93 @@ checkStart(StartChecks(
 ), .eventTapFailed, "tap check third")
 check(tapRecorder.snapshot() == ["trust", "symbol", "tap"], "start checks run in order")
 
+@MainActor
+func windowResolverChecks() {
+    do {
+        var role: [Int: String] = [20: "AXWindow", 21: "AXApplication"]
+        for i in 0...19 { role[i] = "AXGroup" }
+        var parent: [Int: Int] = [:]
+        for i in 0...21 { parent[i] = i + 1 }
+        let windowAttr = [0: 20]
+        let result = WindowResolver.resolve(
+            hit: 0,
+            window: { windowAttr[$0] },
+            role: { role[$0] },
+            parent: { parent[$0] }
+        )
+        check(result == 20, "Resolver deep content uses window attribute")
+    }
+    do {
+        var role: [Int: String] = [4: "AXWindow", 5: "AXApplication"]
+        for i in 0...3 { role[i] = "AXGroup" }
+        var parent: [Int: Int] = [:]
+        for i in 0...10 { parent[i] = i + 1 }
+        let windowAttr: [Int: Int] = [:]
+        let result = WindowResolver.resolve(
+            hit: 0,
+            window: { windowAttr[$0] },
+            role: { role[$0] },
+            parent: { parent[$0] }
+        )
+        check(result == 4, "Resolver shallow walk finds window")
+    }
+    do {
+        var role: [Int: String] = [20: "AXWindow", 21: "AXApplication"]
+        for i in 0...19 { role[i] = "AXGroup" }
+        var parent: [Int: Int] = [:]
+        for i in 0...21 { parent[i] = i + 1 }
+        let windowAttr: [Int: Int] = [:]
+        let result = WindowResolver.resolve(
+            hit: 0,
+            window: { windowAttr[$0] },
+            role: { role[$0] },
+            parent: { parent[$0] }
+        )
+        check(result == 8, "Resolver deep fallback stops after 8 steps")
+    }
+    do {
+        var role: [Int: String] = [3: "AXWindow", 4: "AXApplication"]
+        for i in 0...2 { role[i] = "AXGroup" }
+        var parent: [Int: Int] = [:]
+        for i in 0...10 { parent[i] = i + 1 }
+        let windowAttr = [0: 1]
+        let result = WindowResolver.resolve(
+            hit: 0,
+            window: { windowAttr[$0] },
+            role: { role[$0] },
+            parent: { parent[$0] }
+        )
+        check(result == 3, "Resolver ignores non-window attribute")
+    }
+    do {
+        let role = [0: "AXWindow", 1: "AXApplication"]
+        var parent: [Int: Int] = [:]
+        for i in 0...10 { parent[i] = i + 1 }
+        let windowAttr: [Int: Int] = [:]
+        let result = WindowResolver.resolve(
+            hit: 0,
+            window: { windowAttr[$0] },
+            role: { role[$0] },
+            parent: { parent[$0] }
+        )
+        check(result == 0, "Resolver hit is the window")
+    }
+    do {
+        var role: [Int: String] = [:]
+        for i in 0...2 { role[i] = "AXGroup" }
+        let parent = [0: 1, 1: 2]
+        let windowAttr: [Int: Int] = [:]
+        let result = WindowResolver.resolve(
+            hit: 0,
+            window: { windowAttr[$0] },
+            role: { role[$0] },
+            parent: { parent[$0] }
+        )
+        check(result == 2, "Resolver walk stops at nil parent")
+    }
+}
+
+windowResolverChecks()
+
 print("selftest: \(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }
