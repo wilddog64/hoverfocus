@@ -104,17 +104,18 @@ See [docs/config.md](docs/config.md) for full descriptions of all configuration 
 
 | App | Typing lands without raise | Cmd shortcuts | Notes |
 |---|---|---|---|
-| TextEdit | pending v0.0.3 live check | pending v0.0.3 live check | |
-| TextEdit second window (same app) | pending v0.0.3 live check | pending v0.0.3 live check | |
-| Safari | pending v0.0.3 live check | pending v0.0.3 live check | |
-| Chrome | pending v0.0.3 live check | pending v0.0.3 live check | |
-| Mail | pending v0.0.3 live check | pending v0.0.3 live check | |
-| Terminal.app | pending v0.0.3 live check | pending v0.0.3 live check | |
-| iTerm2 | pending v0.0.3 live check | pending v0.0.3 live check | |
-| Slack | pending v0.0.3 live check | pending v0.0.3 live check | |
-| VS Code | pending v0.0.3 live check | pending v0.0.3 live check | |
+| TextEdit | yes | not tried | |
+| TextEdit second window (same app) | yes | not tried | |
+| Safari | yes | yes (Cmd+L) | Safari brings its own window forward on Cmd+L and when you hover its page content |
+| Chrome | yes | yes | |
+| Mail | yes | not tried | |
+| Terminal.app | yes | yes | |
+| iTerm2 | yes | not tried | |
+| Slack | yes | not tried | message area and window buttons |
+| VS Code | yes | not tried | editor text and title bar |
 
-The 2026-11-25 probe on macOS 26.5.1 passed **typing without raise** for the eight apps other than iTerm2; iTerm2 and Cmd shortcuts are checked at the v0.0.3 release live check, which fills the table.
+Checked live on macOS 26.5.1 (m2-air, 2026-11-25) with each app behind another window and the pointer resting on it.
+Hovering the Dock does not move keyboard focus.
 
 ## Known Limitations
 
@@ -122,7 +123,7 @@ The 2026-11-25 probe on macOS 26.5.1 passed **typing without raise** for the eig
 - Ad-hoc signed builds require re-granting Accessibility permission after rebuilding.
 - Electron applications and full-screen spaces may handle window focus differently.
 - Intended for personal workstations and development environments.
-- Some apps can raise their own window when they receive focus (seen with Safari on macOS 26). Add such apps to ignoreApps (bundle IDs), for example "ignoreApps": ["com.apple.Safari"].
+- Some apps raise their own window when they receive focus: Safari on macOS 26 comes forward when you hover its page content or press Cmd+L (its title bar does not). Add such apps to ignoreApps (bundle IDs), for example "ignoreApps": ["com.apple.Safari"].
 - Hovering another window of the app that is already in front does not move focus (live-checked on macOS 26,
   2026-11-23); click to switch windows within one app. Planned fix: v0.0.2.
 - After hover focus returns to a terminal (iTerm2, Terminal.app), its cursor can be drawn as unfocused (hollow) even
