@@ -379,6 +379,95 @@ func coordinatorChecks() {
         coordinator.load(.success(Config()))
         check(!coordinator.watchingTrust, "trusted at launch")
     }
+    do {
+        var notifier = ErrorNotifier()
+        let a = Health.configError(.invalid(path: "a", reason: "one"))
+        let b = Health.configError(.invalid(path: "a", reason: "two"))
+        let access = Health.startError(.accessibilityNotTrusted)
+        let tap = Health.startError(.eventTapFailed)
+        check(notifier.observe(.ok) == nil, "Notifier ok stays quiet")
+        check(notifier.observe(a) == a, "Notifier ok to config announces")
+        check(notifier.observe(a) == nil, "Notifier same config stays quiet")
+        check(notifier.observe(b) == b, "Notifier changed config announces")
+        check(notifier.observe(access) == access, "Notifier config to start announces")
+        check(notifier.observe(tap) == tap, "Notifier changed start error announces")
+        check(notifier.observe(tap) == nil, "Notifier same start error stays quiet")
+        check(notifier.observe(.ok) == nil, "Notifier error to ok stays quiet")
+        check(notifier.observe(tap) == tap, "Notifier same error after ok announces")
+    }
+    do {
+        let controller = FakeController()
+        var trusted = true
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { trusted })
+        coordinator.load(.success(Config()))
+        trusted = false
+        coordinator.trustTick()
+        check(controller.calls.filter { $0 == "stop" }.count == 1 && !controller.isRunning &&
+              coordinator.startError == .accessibilityNotTrusted && coordinator.watchingTrust &&
+              coordinator.health == .startError(.accessibilityNotTrusted), "Loss detected")
+    }
+    do {
+        let controller = FakeController()
+        var trusted = true
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { trusted })
+        coordinator.load(.success(Config()))
+        trusted = false
+        coordinator.trustTick()
+        let startsAtLoss = controller.calls.filter { $0 == "start" }.count
+        trusted = true
+        coordinator.trustTick()
+        check(controller.calls.filter { $0 == "start" }.count == startsAtLoss + 1 && controller.isRunning &&
+              coordinator.health == .ok, "Loss recovers")
+    }
+    do {
+        let controller = FakeController()
+        var trusted = true
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { trusted })
+        coordinator.load(.success(Config()))
+        trusted = false
+        coordinator.load(.success(Config()))
+        let stillRunning = controller.isRunning && coordinator.watchingTrust
+        coordinator.trustTick()
+        check(stillRunning && controller.calls.filter { $0 == "stop" }.count == 1 &&
+              coordinator.health == .startError(.accessibilityNotTrusted), "Reload while lost")
+    }
+    do {
+        let offController = FakeController()
+        offController.startError = .accessibilityNotTrusted
+        let offCoordinator = AppCoordinator(controller: offController, isTrusted: { false })
+        offCoordinator.load(.success(Config(enabled: false)))
+        let pausedController = FakeController()
+        pausedController.startError = .accessibilityNotTrusted
+        pausedController.isPaused = true
+        let pausedCoordinator = AppCoordinator(controller: pausedController, isTrusted: { false })
+        pausedCoordinator.load(.success(Config()))
+        check(offCoordinator.health == .ok && pausedCoordinator.health == .ok, "Off/Paused stay quiet")
+    }
+    do {
+        let controller = FakeController()
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { true })
+        coordinator.load(.success(Config()))
+        for _ in 0..<100 { coordinator.trustTick() }
+        check(controller.calls.filter { $0 == "stop" }.isEmpty &&
+              controller.calls.filter { $0 == "start" }.count == 1, "No false loss")
+    }
+    do {
+        let controller = FakeController()
+        controller.startError = .eventTapFailed
+        let coordinator = AppCoordinator(controller: controller, isTrusted: { true })
+        coordinator.load(.success(Config()))
+        coordinator.load(.failure(.invalid(path: "test", reason: "broken")))
+        let configWins = coordinator.health == .configError(.invalid(path: "test", reason: "broken"))
+        check(configWins, "Health precedence config error wins")
+        let runningController = FakeController()
+        runningController.startError = .eventTapFailed
+        let runningCoordinator = AppCoordinator(controller: runningController, isTrusted: { true })
+        runningCoordinator.load(.success(Config()))
+        runningController.startError = nil
+        try? runningController.start()
+        check(runningController.isRunning && runningCoordinator.health == .ok,
+              "Health precedence running hides start error")
+    }
 }
 
 coordinatorChecks()

@@ -1,6 +1,8 @@
 import AppKit
 import HoverFocusCore
 import HoverFocusPlatform
+import UserNotifications
+import os
 
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -10,9 +12,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appearanceObserver: NSKeyValueObservation?
     private var accessibilityTimer: Timer?
     private var pauseTimer: Timer?
+    private var errorNotifier = ErrorNotifier()
+    private let healthLogger = Logger(subsystem: "com.wilddog64.hoverfocus", category: "health")
 
     private var config: Config { coordinator.config }
-    private var configError: ConfigError? { coordinator.configError }
 
     // Menu item references
     private var statusMenuItem: NSMenuItem!
@@ -31,6 +34,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator = AppCoordinator(controller: controller, isTrusted: {
             AccessibilityPermission.isTrusted(prompt: false)
         })
+        if accessibilityTimer == nil {
+            accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.coordinator.trustTick()
+                    self.updateUI()
+                }
+            }
+        }
         loadConfiguration()
 
         if let button = statusItem.button {
@@ -117,39 +129,40 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             result = .failure(.invalid(path: MenuModel.configPath(), reason: error.localizedDescription))
         }
         coordinator.load(result)
-        syncTrustTimer()
         updateUI()
     }
 
-    private func syncTrustTimer() {
-        if coordinator.watchingTrust {
-            guard accessibilityTimer == nil else { return }
-            accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.coordinator.trustTick()
-                    self.syncTrustTimer()
-                    self.updateUI()
-                }
-            }
-        } else {
-            accessibilityTimer?.invalidate()
-            accessibilityTimer = nil
-        }
-    }
-
     private func updateUI() {
-        // Status line
-        if let cfgErr = configError {
-            statusMenuItem.title = MenuModel.statusLine(for: cfgErr)
-        } else if !config.enabled {
-            statusMenuItem.title = MenuModel.statusLine(for: .off)
-        } else if controller.isPaused {
-            statusMenuItem.title = MenuModel.statusLine(for: .paused)
-        } else if controller.isRunning {
-            statusMenuItem.title = MenuModel.statusLine(for: .running)
-        } else if let startError = coordinator.startError {
-            statusMenuItem.title = MenuModel.statusLine(for: startError)
+        let health = coordinator.health
+        let statusLine: String
+        switch health {
+        case .ok:
+            if !config.enabled {
+                statusLine = MenuModel.statusLine(for: .off)
+            } else if controller.isPaused {
+                statusLine = MenuModel.statusLine(for: .paused)
+            } else {
+                statusLine = MenuModel.statusLine(for: .running)
+            }
+            statusMenuItem.attributedTitle = nil
+            statusMenuItem.title = statusLine
+            statusMenuItem.target = nil
+            statusMenuItem.action = nil
+            statusMenuItem.isEnabled = false
+        case .configError(let error):
+            statusLine = MenuModel.statusLine(for: AppStatus.configError(error))
+            setErrorStatusLine(statusLine, action: #selector(openConfig))
+        case .startError(let error):
+            statusLine = MenuModel.statusLine(for: AppStatus.controllerError(error))
+            let action: Selector = error == .accessibilityNotTrusted ? #selector(grantAccessibility) : #selector(reloadConfig)
+            setErrorStatusLine(statusLine, action: action)
+        }
+
+        if let announced = errorNotifier.observe(health) {
+            healthLogger.info("health \(self.healthCase(announced), privacy: .public)")
+            if Bundle.main.bundleURL.pathExtension == "app" {
+                postErrorNotification(body: statusLine)
+            }
         }
 
         // Enabled state
@@ -174,6 +187,45 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon()
     }
 
+    private func setErrorStatusLine(_ title: String, action: Selector) {
+        statusMenuItem.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: NSColor.systemRed,
+            .font: NSFont.menuFont(ofSize: 0),
+        ])
+        statusMenuItem.target = self
+        statusMenuItem.action = action
+        statusMenuItem.isEnabled = true
+    }
+
+    private func healthCase(_ health: Health) -> String {
+        switch health {
+        case .ok: return "ok"
+        case .configError: return "configError"
+        case .startError: return "startError"
+        }
+    }
+
+    private func postErrorNotification(body: String) {
+        Task { @MainActor in
+            let center = UNUserNotificationCenter.current()
+            let granted = (try? await center.requestAuthorization(options: [.alert])) ?? false
+            var posted = false
+            if granted {
+                let content = UNMutableNotificationContent()
+                content.title = "HoverFocus"
+                content.body = body
+                let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+                do {
+                    try await center.add(request)
+                    posted = true
+                } catch {
+                    posted = false
+                }
+            }
+            healthLogger.info("notify granted=\(granted, privacy: .public) posted=\(posted, privacy: .public)")
+        }
+    }
+
     private func updateIcon() {
         guard let button = statusItem.button else { return }
         let isDarkBar = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -184,7 +236,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleEnabled() {
         coordinator.update { $0.enabled.toggle() }
-        syncTrustTimer()
         updateUI()
     }
 
@@ -210,13 +261,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let raw = sender.representedObject as? String,
               let style = MenuBarIconStyle(rawValue: raw) else { return }
         coordinator.update { $0.menuBarIcon = style }
-        syncTrustTimer()
         updateUI()
     }
 
     @objc private func grantAccessibility() {
         _ = AccessibilityPermission.isTrusted(prompt: true)
-        syncTrustTimer()
         updateUI()
     }
 

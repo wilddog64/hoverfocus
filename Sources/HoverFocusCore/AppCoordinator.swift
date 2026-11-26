@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 @MainActor
 public final class AppCoordinator {
@@ -7,8 +8,16 @@ public final class AppCoordinator {
     public private(set) var startError: ControllerError?
     public private(set) var watchingTrust = false
 
+    public var health: Health {
+        if let configError { return .configError(configError) }
+        if !config.enabled || controller.isPaused { return .ok }
+        if let startError, !controller.isRunning { return .startError(startError) }
+        return .ok
+    }
+
     private let controller: any FocusControlling
     private let isTrusted: @MainActor () -> Bool
+    private let healthLogger = Logger(subsystem: "com.wilddog64.hoverfocus", category: "health")
 
     public init(controller: any FocusControlling, isTrusted: @escaping @MainActor () -> Bool) {
         self.controller = controller
@@ -31,6 +40,13 @@ public final class AppCoordinator {
     }
 
     public func trustTick() {
+        if controller.isRunning && !isTrusted() {
+            healthLogger.info("trust lost")
+            controller.stop()
+            startError = .accessibilityNotTrusted
+            watchingTrust = true
+            return
+        }
         guard watchingTrust else { return }
         guard isTrusted() else { return }
         watchingTrust = false
