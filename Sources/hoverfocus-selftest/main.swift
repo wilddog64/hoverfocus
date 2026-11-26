@@ -157,6 +157,13 @@ if let partial = try? tempFile("{\"enabled\":false}") {
     check(loaded?.enabled == false && loaded?.dwellMs == Config().dwellMs, "partial config fills defaults")
     try? FileManager.default.removeItem(at: partial)
 }
+check(Config().focusIndicator == true, "focusIndicator defaults true")
+if let url = try? tempFile("{\"focusIndicator\":false}") {
+    let cfg = try? ConfigLoader.load(from: url)
+    check(cfg?.focusIndicator == false, "focusIndicator false parses")
+    try? FileManager.default.removeItem(at: url)
+}
+check(rejected("{\"focusIndicator\":1}", key: "focusIndicator must be boolean"), "focusIndicator non-boolean rejected")
 if let encoded = try? JSONEncoder().encode(Config()),
    let url = try? tempFile(String(decoding: encoded, as: UTF8.self)) {
     check((try? ConfigLoader.load(from: url)) == Config(), "encoded config round trips")
@@ -583,6 +590,227 @@ func windowResolverChecks() {
 }
 
 windowResolverChecks()
+
+@MainActor
+func focusIndicatorChecks() {
+    let dummyRect = IndicatorRect(x: 10, y: 10, width: 100, height: 100)
+
+    // 1. Indicator tracks successful focus
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        check(model.trackedWindowID == 42, "Indicator tracks successful focus")
+    }
+
+    // 2. Indicator frame converts
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let f = model.frame(enabled: true, paused: false, bounds: { _ in IndicatorRect(x: 100, y: 50, width: 400, height: 300) }, mainHeight: 1000)
+        check(f == IndicatorRect(x: 100, y: 650, width: 400, height: 300), "Indicator frame converts")
+    }
+
+    // 3. Indicator frame converts negative cocoa Y
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let f = model.frame(enabled: true, paused: false, bounds: { _ in IndicatorRect(x: 1500, y: 800, width: 400, height: 300) }, mainHeight: 1000)
+        check(f == IndicatorRect(x: 1500, y: -100, width: 400, height: 300), "Indicator frame converts negative cocoa Y")
+    }
+
+    // 4. Indicator strips surround window
+    do {
+        let strips = IndicatorGeometry.strips(around: IndicatorRect(x: 100, y: 650, width: 400, height: 300))
+        let expected = [
+            IndicatorRect(x: 97, y: 950, width: 406, height: 3),
+            IndicatorRect(x: 97, y: 647, width: 406, height: 3),
+            IndicatorRect(x: 97, y: 650, width: 3, height: 300),
+            IndicatorRect(x: 500, y: 650, width: 3, height: 300)
+        ]
+        check(strips == expected, "Indicator strips surround window")
+    }
+
+    // 5. Indicator follows latest focus
+    do {
+        var model = FocusIndicatorModel()
+        let t1 = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        let t2 = WindowTarget(windowID: 99, pid: 11, bundleID: "b", isStandardWindow: true)
+        model.decided(.focus(t1), succeeded: true, nowMs: 100)
+        model.decided(.focus(t2), succeeded: true, nowMs: 200)
+        check(model.trackedWindowID == 99, "Indicator follows latest focus")
+    }
+
+    // 6. Indicator keeps tracking on none
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        model.decided(.none, succeeded: true, nowMs: 200)
+        check(model.trackedWindowID == 42, "Indicator keeps tracking on none")
+    }
+
+    // 7. Indicator keeps on click on tracked
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        model.mouseDown(onWindow: 42)
+        check(model.trackedWindowID == 42, "Indicator keeps on click on tracked")
+    }
+
+    // 8. Indicator keeps on observed match
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        model.observeFocused(42, nowMs: 200)
+        check(model.trackedWindowID == 42, "Indicator keeps on observed match")
+    }
+
+    // 9. Indicator clears on raise
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.decided(.focusAndRaise(t), succeeded: true, nowMs: 200)
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator clears on raise")
+    }
+
+    // 10. Indicator clears on failed focus
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.decided(.focus(t), succeeded: false, nowMs: 200)
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator clears on failed focus")
+    }
+
+    // 11. Indicator clears on click elsewhere
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.mouseDown(onWindow: 99)
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator clears on click elsewhere")
+    }
+
+    // 12. Indicator clears on unknown click
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.mouseDown(onWindow: nil)
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator clears on unknown click")
+    }
+
+    // 13. Indicator clears on confirmed focus change
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        model.observeFocused(42, nowMs: 150)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.observeFocused(99, nowMs: 200)
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator clears on confirmed focus change")
+    }
+
+    // 14. Indicator clears when unconfirmed 1000 ms
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        model.observeFocused(99, nowMs: 500)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.observeFocused(99, nowMs: 1100)
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator clears when unconfirmed 1000 ms")
+    }
+
+    // 15. Indicator ignores nil observed focus
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        model.observeFocused(nil, nowMs: 2000)
+        check(model.trackedWindowID == 42, "Indicator ignores nil observed focus")
+    }
+
+    // 16. Indicator nil when disabled
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        let post = model.frame(enabled: false, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        check(pre != nil && post == nil, "Indicator nil when disabled")
+    }
+
+    // 17. Indicator nil when paused
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        let post = model.frame(enabled: true, paused: true, bounds: { _ in dummyRect }, mainHeight: 1000)
+        check(pre != nil && post == nil, "Indicator nil when paused")
+    }
+
+    // 18. Indicator nil after reset
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        model.reset()
+        check(pre != nil && model.trackedWindowID == nil && model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000) == nil, "Indicator nil after reset")
+    }
+
+    // 19. Indicator nil when window gone
+    do {
+        var model = FocusIndicatorModel()
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        let pre = model.frame(enabled: true, paused: false, bounds: { _ in dummyRect }, mainHeight: 1000)
+        assert(pre != nil)
+        let post = model.frame(enabled: true, paused: false, bounds: { _ in nil }, mainHeight: 1000)
+        check(pre != nil && post == nil, "Indicator nil when window gone")
+    }
+
+    // 20. Indicator skips bounds when idle
+    do {
+        var model = FocusIndicatorModel()
+        var count = 0
+        let countingBounds: (UInt32) -> IndicatorRect? = { _ in
+            count += 1
+            return dummyRect
+        }
+        _ = model.frame(enabled: true, paused: false, bounds: countingBounds, mainHeight: 1000)
+        let t = WindowTarget(windowID: 42, pid: 10, bundleID: "a", isStandardWindow: true)
+        model.decided(.focus(t), succeeded: true, nowMs: 100)
+        _ = model.frame(enabled: false, paused: false, bounds: countingBounds, mainHeight: 1000)
+        _ = model.frame(enabled: true, paused: true, bounds: countingBounds, mainHeight: 1000)
+        model.reset()
+        _ = model.frame(enabled: true, paused: false, bounds: countingBounds, mainHeight: 1000)
+        check(count == 0, "Indicator skips bounds when idle")
+    }
+}
+
+focusIndicatorChecks()
 
 print("selftest: \(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }

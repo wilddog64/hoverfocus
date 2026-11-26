@@ -11,6 +11,7 @@ If the configuration file is missing, default values are used. If the file conta
 |---|---|---|---|
 | `dwellMs` | Integer | `150` | Dwell duration in milliseconds before focusing the window under the mouse cursor. Range: `0`–`5000`. |
 | `enabled` | Boolean | `true` | Master toggle to enable or disable focus following mouse. |
+| `focusIndicator` | Boolean | `true` | Draws a thin accent-colour border around the window focused by hover; set false to turn it off. |
 | `ignoreApps` | Array of Strings | `[]` | Bundle identifiers of applications to exclude from focus changes. |
 | `ignoreWhenButtonDown` | Boolean | `true` | When true, hover focus is suppressed while any mouse button is pressed (e.g. during drag operations). |
 | `menuBarIcon` | String | `"auto"` | Menu bar icon appearance. Allowed values: `"auto"`, `"color"`, `"light"`, `"dark"`. |

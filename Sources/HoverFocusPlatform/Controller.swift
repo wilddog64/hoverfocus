@@ -37,10 +37,14 @@ public final class HoverFocusController: FocusControlling {
     private var elements = RecentCache<UInt32, AXUIElement>(capacity: 32)
     private var accessibilityTreePids = RecentCache<Int32, Bool>(capacity: 256)
     private let logger = Logger(subsystem: "com.wilddog64.hoverfocus", category: "focus")
+    private var indicator = FocusIndicatorModel()
+    private let indicatorPanel = FocusIndicatorPanel()
+    private var indicatorEnabled: Bool
 
     public init(config: Config, checks: StartChecks = HoverFocusController.liveChecks) {
         engine = Engine(config: config)
         self.checks = checks
+        indicatorEnabled = config.enabled && config.focusIndicator
     }
 
     public func start() throws {
@@ -94,10 +98,44 @@ public final class HoverFocusController: FocusControlling {
     }
 
     private func onTick() {
-        guard !isPaused else { return }
+        guard isRunning else { return }
+        guard !isPaused else {
+            indicator.reset()
+            indicatorPanel.hide()
+            return
+        }
+        let now = MonotonicClock.nowMs()
         let state = systemState()
-        let decision = engine.tick(nowMs: MonotonicClock.nowMs(), state: state)
+        let decision = engine.tick(nowMs: now, state: state)
         applyDecision(decision)
+        indicator.observeFocused(state.focusedWindowID, nowMs: now)
+        let mainHeight = Double(CGDisplayBounds(CGMainDisplayID()).height)
+        let frame = indicator.frame(
+            enabled: indicatorEnabled,
+            paused: isPaused,
+            bounds: { [weak self] id in self?.windowBounds(for: id) },
+            mainHeight: mainHeight
+        )
+        if let frame, let trackedID = indicator.trackedWindowID {
+            indicatorPanel.show(
+                windowFrame: NSRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height),
+                aboveWindow: trackedID
+            )
+        } else {
+            indicatorPanel.hide()
+        }
+    }
+
+    private func windowBounds(for windowID: UInt32) -> IndicatorRect? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
+              let window = list.first,
+              let isOnscreen = window[kCGWindowIsOnscreen as String] as? Bool, isOnscreen,
+              let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0,
+              let dict = window[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: dict) else {
+            return nil
+        }
+        return IndicatorRect(x: rect.origin.x, y: rect.origin.y, width: rect.size.width, height: rect.size.height)
     }
 
     private func handle(_ proxy: CGEventTapProxy, _ type: CGEventType, _ event: CGEvent) {
@@ -110,6 +148,15 @@ public final class HoverFocusController: FocusControlling {
         let point = event.location
         lastPointer = point
         let target = tapState.target(at: now) { lookup(x: point.x, y: point.y) }
+        let isMouseDown = [
+            CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown
+        ].contains(type)
+        if isMouseDown {
+            indicator.mouseDown(onWindow: target?.windowID)
+            if indicator.trackedWindowID == nil {
+                indicatorPanel.hide()
+            }
+        }
         var modifiers: Modifiers = []
         if event.flags.contains(.maskControl) { modifiers.insert(.control) }
         if event.flags.contains(.maskAlternate) { modifiers.insert(.option) }
@@ -217,10 +264,12 @@ public final class HoverFocusController: FocusControlling {
     private func ownerPidAt(x: Double, y: Double) -> Int32 {
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] else { return 0 }
+        let currentPid = Int(getpid())
         for window in info {
             guard let layer = window[kCGWindowLayer as String] as? Int, layer == 0,
                   let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0,
                   let pid = window[kCGWindowOwnerPID as String] as? Int,
+                  pid != currentPid,
                   let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
                   let left = bounds["X"], let top = bounds["Y"],
                   let width = bounds["Width"], let height = bounds["Height"],
@@ -298,9 +347,12 @@ public final class HoverFocusController: FocusControlling {
         if result != 0 {
             logger.error("focus failed for window \(target.windowID, privacy: .public)")
         }
+        indicator.decided(decision, succeeded: result == 0, nowMs: MonotonicClock.nowMs())
     }
 
     public func stop() {
+        indicator.reset()
+        indicatorPanel.hide()
         timer?.invalidate()
         timer = nil
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
@@ -312,6 +364,11 @@ public final class HoverFocusController: FocusControlling {
 
     public func apply(_ config: Config) {
         engine.update(config)
+        indicatorEnabled = config.enabled && config.focusIndicator
+        if !indicatorEnabled {
+            indicator.reset()
+            indicatorPanel.hide()
+        }
     }
 
     public nonisolated static let liveChecks = StartChecks(

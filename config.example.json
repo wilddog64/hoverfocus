@@ -1,6 +1,7 @@
 {
   "dwellMs" : 150,
   "enabled" : true,
+  "focusIndicator" : true,
   "ignoreApps" : [
 
   ],

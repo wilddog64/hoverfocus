@@ -128,6 +128,7 @@ Hovering the Dock does not move keyboard focus.
   2026-11-23); click to switch windows within one app. Planned fix: v0.0.2.
 - After hover focus returns to a terminal (iTerm2, Terminal.app), its cursor can be drawn as unfocused (hollow) even
   though keystrokes reach it; one click restores it. Planned fix: v0.0.2.
+- The border is drawn by HoverFocus, so the focused app still looks inactive (title bar, cursor shape); the border disappears within about a second after a keyboard focus change.
 
 ## License
 

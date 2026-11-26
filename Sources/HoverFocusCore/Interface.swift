@@ -63,14 +63,17 @@ public struct Config: Codable, Sendable, Equatable {
     public var ignoreApps: [String]
     public var raiseApps: [String]
     public var menuBarIcon: MenuBarIconStyle
+    public var focusIndicator: Bool
     public init(enabled: Bool = true, dwellMs: Int = 150, stillnessPx: Double = 4,
                 ignoreWhenButtonDown: Bool = true, pauseModifier: PauseModifier = .function,
                 ignoreApps: [String] = [], raiseApps: [String] = [],
-                menuBarIcon: MenuBarIconStyle = .auto) {
+                menuBarIcon: MenuBarIconStyle = .auto,
+                focusIndicator: Bool = true) {
         self.enabled = enabled; self.dwellMs = dwellMs; self.stillnessPx = stillnessPx
         self.ignoreWhenButtonDown = ignoreWhenButtonDown; self.pauseModifier = pauseModifier
         self.ignoreApps = ignoreApps; self.raiseApps = raiseApps
         self.menuBarIcon = menuBarIcon
+        self.focusIndicator = focusIndicator
     }
 }
 

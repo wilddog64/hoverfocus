@@ -26,7 +26,8 @@ public enum ConfigLoader {
         }
         let knownKeys: Set<String> = [
             "enabled", "dwellMs", "stillnessPx", "ignoreWhenButtonDown",
-            "pauseModifier", "ignoreApps", "raiseApps", "menuBarIcon"
+            "pauseModifier", "ignoreApps", "raiseApps", "menuBarIcon",
+            "focusIndicator"
         ]
         for key in values.keys where !knownKeys.contains(key) {
             throw invalid("unknown key: \(key)")
@@ -43,6 +44,7 @@ public enum ConfigLoader {
         }
         try readBoolean("enabled") { config.enabled = $0 }
         try readBoolean("ignoreWhenButtonDown") { config.ignoreWhenButtonDown = $0 }
+        try readBoolean("focusIndicator") { config.focusIndicator = $0 }
 
         if let value = values["dwellMs"] {
             guard let number = value as? NSNumber,
