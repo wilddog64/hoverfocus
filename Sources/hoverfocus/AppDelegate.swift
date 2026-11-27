@@ -13,6 +13,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accessibilityTimer: Timer?
     private var pauseTimer: Timer?
     private var errorNotifier = ErrorNotifier()
+    private var menuBarIconState = MenuBarIconState()
     private let healthLogger = Logger(subsystem: "com.wilddog64.hoverfocus", category: "health")
 
     private var config: Config { coordinator.config }
@@ -230,6 +231,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         let isDarkBar = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let isDimmed = !config.enabled || controller.isPaused
+        let key = MenuBarIconKey(style: config.menuBarIcon, darkBar: isDarkBar, dimmed: isDimmed)
+        guard menuBarIconState.needsApply(key) else { return }
         let image = MenuBarIcon.makeImage(style: config.menuBarIcon, darkBar: isDarkBar, dimmed: isDimmed)
         button.image = image
     }

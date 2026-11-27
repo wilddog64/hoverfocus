@@ -39,10 +39,43 @@ func rejected(_ contents: String, key: String? = nil) -> Bool {
 let target = WindowTarget(windowID: 2, pid: 42, bundleID: "test.app", isStandardWindow: true)
 let state = SystemState(focusedWindowID: 1, menuOpen: false, missionControlActive: false)
 let sample = PointerSample(x: 10, y: 10, timeMs: 100, buttonsDown: false, modifiers: [])
+var iconState = MenuBarIconState()
+let iconKey = MenuBarIconKey(style: .auto, darkBar: false, dimmed: false)
+check(iconState.needsApply(iconKey), "MenuBarIconState first key applies")
+check(!iconState.needsApply(iconKey), "MenuBarIconState unchanged key skips")
+for changedKey in [
+    MenuBarIconKey(style: .color, darkBar: false, dimmed: false),
+    MenuBarIconKey(style: .color, darkBar: true, dimmed: false),
+    MenuBarIconKey(style: .color, darkBar: true, dimmed: true),
+] {
+    check(iconState.needsApply(changedKey), "MenuBarIconState changed key applies")
+    check(!iconState.needsApply(changedKey), "MenuBarIconState changed key then skips")
+}
+iconState.invalidate()
+check(iconState.needsApply(MenuBarIconKey(style: .color, darkBar: true, dimmed: true)), "MenuBarIconState invalidation reapplies")
+check((0..<100).filter { _ in iconState.needsApply(MenuBarIconKey(style: .color, darkBar: true, dimmed: true)) }.count == 0,
+      "MenuBarIconState 100 unchanged calls skip")
+check(TickPolicy.interval(candidatePending: true, tracked: false, msSinceLastPointerEvent: nil) == 0.05,
+      "TickPolicy candidate interval")
+check(TickPolicy.interval(candidatePending: false, tracked: false, msSinceLastPointerEvent: 499) == 0.05,
+      "TickPolicy recent pointer interval")
+check(TickPolicy.interval(candidatePending: false, tracked: true, msSinceLastPointerEvent: 500) == 0.25,
+      "TickPolicy tracked idle interval")
+check(TickPolicy.interval(candidatePending: false, tracked: false, msSinceLastPointerEvent: 500) == nil,
+      "TickPolicy inactive timer stops")
+check(TickPolicy.shouldReschedule(pendingFireInMs: nil, newIntervalMs: 50),
+      "TickPolicy reschedules when no timer is pending")
+check(!TickPolicy.shouldReschedule(pendingFireInMs: 30, newIntervalMs: 50),
+      "TickPolicy keeps an earlier pending timer")
+check(TickPolicy.shouldReschedule(pendingFireInMs: 250, newIntervalMs: 50),
+      "TickPolicy advances a later pending timer")
 var engine = Engine(config: Config(dwellMs: 10))
+check(!engine.hasPendingCandidate, "Engine candidate initially absent")
 check(engine.observe(sample, under: target, state: state) == .none, "starts before dwell")
+check(engine.hasPendingCandidate, "Engine reports pending candidate")
 check(engine.tick(nowMs: 109, state: state) == .none, "dwell minus one")
 check(engine.tick(nowMs: 110, state: state) == .focus(target), "tick fires at dwell")
+check(!engine.hasPendingCandidate, "Engine candidate clears after dwell")
 check(engine.tick(nowMs: 120, state: state) == .none, "fires once")
 let laterSample = PointerSample(x: 10, y: 10, timeMs: 130, buttonsDown: false, modifiers: [])
 check(engine.observe(laterSample, under: target, state: state) == .none, "stays latched after firing")

@@ -26,13 +26,23 @@ private final class TapState: @unchecked Sendable {
 @MainActor
 public final class HoverFocusController: FocusControlling {
     public private(set) var isRunning = false
-    public var isPaused = false
+    public var isPaused = false {
+        didSet {
+            guard oldValue != isPaused else { return }
+            if isPaused {
+                indicator.reset()
+                indicatorPanel.hide()
+            }
+            rearmTimer()
+        }
+    }
     private var engine: Engine
     private let checks: StartChecks
     private let tapState = TapState()
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var timer: Timer?
+    private var lastPointerEventMs: UInt64?
     private var lastPointer: CGPoint?
     private var elements = RecentCache<UInt32, AXUIElement>(capacity: 32)
     private var accessibilityTreePids = RecentCache<Int32, Bool>(capacity: 256)
@@ -82,10 +92,8 @@ public final class HoverFocusController: FocusControlling {
         }
         source = runLoopSource
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.onTick() }
-        }
         isRunning = true
+        rearmTimer()
     }
 
     private func eventMask() -> CGEventMask {
@@ -98,14 +106,11 @@ public final class HoverFocusController: FocusControlling {
     }
 
     private func onTick() {
-        guard isRunning else { return }
-        guard !isPaused else {
-            indicator.reset()
-            indicatorPanel.hide()
-            return
-        }
+        guard isRunning, !isPaused else { rearmTimer(); return }
         let now = MonotonicClock.nowMs()
-        let state = systemState()
+        let windows = onScreenWindows()
+        let hasCandidate = engine.hasPendingCandidate
+        let state = systemState(windows: windows, checkPermits: hasCandidate)
         let decision = engine.tick(nowMs: now, state: state)
         applyDecision(decision)
         indicator.observeFocused(state.focusedWindowID, nowMs: now)
@@ -113,7 +118,7 @@ public final class HoverFocusController: FocusControlling {
         let frame = indicator.frame(
             enabled: indicatorEnabled,
             paused: isPaused,
-            bounds: { [weak self] id in self?.windowBounds(for: id) },
+            bounds: { [weak self] id in self?.windowBounds(for: id, in: windows) },
             mainHeight: mainHeight
         )
         if let frame, let trackedID = indicator.trackedWindowID {
@@ -124,11 +129,11 @@ public final class HoverFocusController: FocusControlling {
         } else {
             indicatorPanel.hide()
         }
+        rearmTimer()
     }
 
-    private func windowBounds(for windowID: UInt32) -> IndicatorRect? {
-        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
-              let window = list.first,
+    private func windowBounds(for windowID: UInt32, in list: [[String: Any]]) -> IndicatorRect? {
+        guard let window = list.first(where: { ($0[kCGWindowNumber as String] as? UInt32) == windowID }),
               let isOnscreen = window[kCGWindowIsOnscreen as String] as? Bool, isOnscreen,
               let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0,
               let dict = window[kCGWindowBounds as String] as? NSDictionary,
@@ -145,6 +150,7 @@ public final class HoverFocusController: FocusControlling {
         }
         guard !isPaused else { return }
         let now = MonotonicClock.nowMs()
+        lastPointerEventMs = now
         let point = event.location
         lastPointer = point
         let target = tapState.target(at: now) { lookup(x: point.x, y: point.y) }
@@ -171,7 +177,10 @@ public final class HoverFocusController: FocusControlling {
             x: point.x, y: point.y, timeMs: now,
             buttonsDown: buttonsDown, modifiers: modifiers
         )
-        applyDecision(engine.observe(sample, under: target, state: systemState()))
+        applyDecision(
+            engine.observe(sample, under: target, state: systemState(windows: onScreenWindows(), checkPermits: true)),
+            onlyIfEarlier: true
+        )
     }
 
     private func lookup(x: Double, y: Double) -> WindowTarget? {
@@ -232,16 +241,21 @@ public final class HoverFocusController: FocusControlling {
         )
     }
 
-    private func systemState() -> SystemState {
+    private func onScreenWindows() -> [[String: Any]] {
+        CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    }
+
+    private func systemState(windows: [[String: Any]], checkPermits: Bool) -> SystemState {
         let focusedWindowID = frontmostWindowID()
         let point = lastPointer
         let x = point?.x ?? 0
         let y = point?.y ?? 0
-        let menuOpen = point != nil && menuWindowIsAt(x: x, y: y)
+        let dockPid = windows.first(where: { $0[kCGWindowOwnerName as String] as? String == "Dock" })?[kCGWindowOwnerPID as String] as? Int
+        let menuOpen = checkPermits && point != nil && menuWindowIsAt(x: x, y: y, windows: windows)
         // Mission Control detection is best effort because its window level is private system state.
-        let missionControlActive = windowAtLevel(
-            x: x, y: y, level: CGWindowLevelForKey(.dockWindow), owner: "com.apple.dock"
-        )
+        let missionControlActive = checkPermits && (dockPid.map {
+            windowAtLevel(x: x, y: y, level: CGWindowLevelForKey(.dockWindow), ownerPid: $0, windows: windows)
+        } ?? false)
         return SystemState(
             focusedWindowID: focusedWindowID,
             menuOpen: menuOpen,
@@ -288,20 +302,19 @@ public final class HoverFocusController: FocusControlling {
         logger.info("ax-enable pid \(pid, privacy: .public) rc \(rc.rawValue, privacy: .public)")
     }
 
-    private func menuWindowIsAt(x: CGFloat, y: CGFloat) -> Bool {
-        windowAtLevel(x: x, y: y, level: CGWindowLevelForKey(.popUpMenuWindow)) ||
-            windowAtLevel(x: x, y: y, level: CGWindowLevelForKey(.mainMenuWindow))
+    private func menuWindowIsAt(x: CGFloat, y: CGFloat, windows: [[String: Any]]) -> Bool {
+        windowAtLevel(x: x, y: y, level: CGWindowLevelForKey(.popUpMenuWindow), windows: windows) ||
+            windowAtLevel(x: x, y: y, level: CGWindowLevelForKey(.mainMenuWindow), windows: windows)
     }
 
     private func windowAtLevel(
         x: CGFloat,
         y: CGFloat,
         level: CGWindowLevel,
-        owner: String? = nil
+        ownerPid: Int? = nil,
+        windows: [[String: Any]]
     ) -> Bool {
-        guard let info = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
-            as? [[String: Any]] else { return false }
-        return info.contains { window in
+        return windows.contains { window in
             guard let layer = window[kCGWindowLayer as String] as? Int,
                   layer == Int(level),
                   let alpha = window[kCGWindowAlpha as String] as? Double,
@@ -309,17 +322,15 @@ public final class HoverFocusController: FocusControlling {
                   let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
                   let left = bounds["X"], let top = bounds["Y"],
                   let width = bounds["Width"], let height = bounds["Height"] else { return false }
-            if let owner {
-                guard let pid = window[kCGWindowOwnerPID as String] as? Int,
-                      NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier == owner else {
-                    return false
-                }
+            if let ownerPid {
+                guard let pid = window[kCGWindowOwnerPID as String] as? Int, pid == ownerPid else { return false }
             }
             return x >= left && x <= left + width && y >= top && y <= top + height
         }
     }
 
-    private func applyDecision(_ decision: Decision) {
+    private func applyDecision(_ decision: Decision, onlyIfEarlier: Bool = false) {
+        defer { rearmTimer(onlyIfEarlier: onlyIfEarlier) }
         let target: WindowTarget
         let raise: Bool
         switch decision {
@@ -360,6 +371,7 @@ public final class HoverFocusController: FocusControlling {
         if let tap { CFMachPortInvalidate(tap) }
         tap = nil
         isRunning = false
+        rearmTimer()
     }
 
     public func apply(_ config: Config) {
@@ -369,6 +381,43 @@ public final class HoverFocusController: FocusControlling {
             indicator.reset()
             indicatorPanel.hide()
         }
+        rearmTimer()
+    }
+
+    private func rearmTimer(onlyIfEarlier: Bool = false) {
+        guard isRunning, !isPaused else {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        let now = MonotonicClock.nowMs()
+        let since = lastPointerEventMs.map { now >= $0 ? now - $0 : 0 }
+        guard let interval = TickPolicy.interval(
+            candidatePending: engine.hasPendingCandidate,
+            tracked: indicator.trackedWindowID != nil,
+            msSinceLastPointerEvent: since
+        ) else {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        let intervalMs = UInt64((interval * 1_000).rounded())
+        if onlyIfEarlier {
+            let pendingFireInMs = timer.map { pending in
+                UInt64(max(0, (pending.fireDate.timeIntervalSinceNow * 1_000).rounded(.down)))
+            }
+            guard TickPolicy.shouldReschedule(pendingFireInMs: pendingFireInMs, newIntervalMs: intervalMs) else {
+                return
+            }
+        }
+        timer?.invalidate()
+        timer = nil
+        let next = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onTick() }
+        }
+        next.tolerance = interval * 0.15
+        timer = next
+        RunLoop.main.add(next, forMode: .common)
     }
 
     public nonisolated static let liveChecks = StartChecks(

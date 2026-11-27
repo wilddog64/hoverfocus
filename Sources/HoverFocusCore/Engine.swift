@@ -11,6 +11,8 @@ public struct Engine: FocusDeciding {
         self.config = config
     }
 
+    public var hasPendingCandidate: Bool { candidate != nil }
+
     public mutating func update(_ config: Config) {
         self.config = config
         candidate = nil
